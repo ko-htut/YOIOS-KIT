@@ -1,10 +1,11 @@
 # SE2 Device & Recovery Center
 
-A native, Apple-silicon macOS app for detailed, source-attributed inspection and official recovery of an **iPhone SE (2nd generation / iPhone12,8)**. It uses Apple Configurator and libimobiledevice/libirecovery; no jailbreak, exploit, activation bypass, or unsigned firmware path is included.
+A native, Apple-silicon macOS app for detailed, source-attributed inspection and official recovery of an **iPhone SE (2nd generation / iPhone12,8)**. The app includes its own pinned libimobiledevice/libirecovery command-line toolchain, so the user does not need Homebrew. Apple Configurator remains an optional, separately installed Apple component for official erase/firmware operations. No jailbreak, exploit, activation bypass, or unsigned firmware path is included.
 
 ## What the app does
 
 - Uses a four-workspace interface: **Overview**, **Recovery**, **Evidence**, and **Activity**, with a pinned status banner that stays visible everywhere.
+- Includes a **Dependency Doctor** that reports the exact built-in tool source/version, optional installed fallback, and which capabilities are ready. A complete built-in suite is always preferred; tools from different installations are never mixed within one capability.
 - Adds a **Backup Center** in Activity that hands control to Finder. The app does not automate, start, observe, or claim completion of a backup and never asks for a backup password.
 - Adds an explicit, exact-target **Crash & Panic Reports** copy workflow. It requires one trusted Normal-mode SE2, creates a new local folder with verified private permissions, always uses `idevicecrashreport --keep`, never requests deletion, never uploads through this app, and never retries automatically.
 - Adds a bounded, structured **USB & Recovery Timeline** for the current app session. It records observed mode/PID transitions and this app's Apple-operation events without scraping iPhone syslog or inferring cable/hardware failure.
@@ -32,11 +33,22 @@ The app does **not** use 3uTools, jailbreak/exploit tools, activation-lock bypas
 ## Requirements on this Mac
 
 - Apple-silicon Mac, macOS 13 or later
-- Apple Configurator installed at `/Applications/Apple Configurator.app`
-- Homebrew tools under `/opt/homebrew/bin` (or `/usr/local/bin` on Intel):
-  - `libimobiledevice`
-  - `libirecovery`
 - One iPhone connected directly with a reliable data cable
+
+No Homebrew installation is required. The release app carries pinned arm64,
+macOS-13-compatible builds of `libimobiledevice 1.4.0`, `libirecovery 1.3.1`,
+and their runtime libraries. If a verified built-in helper is unavailable, an
+existing `/opt/homebrew` or `/usr/local` installation may be used as an optional
+fallback; a single operation never mixes helper suites.
+The libimobiledevice helper set is treated atomically: if the built-in set is
+incomplete or invalid, the app will use only a complete installed fallback or
+disable the affected capabilities.
+
+Install **Apple Configurator** from Apple only if you need Apple Revive, full
+Restore, or Factory Reset. Device inspection, Recovery/DFU verification,
+Normal-to-Recovery transition, guarded restart/shutdown, and crash-report copy
+use the built-in toolchain without Configurator. Finder remains the official
+manual backup handoff.
 
 ## Use
 
@@ -95,11 +107,28 @@ The direct experimental attempt also stopped before writing because RestoreOS di
 
 ## Build from source
 
-Run:
+To rebuild the pinned third-party toolchain, then the app, run:
 
 ```zsh
+./Scripts/build-bundled-tools.sh
 ./build-app.sh
 ```
 
-The local build is ad-hoc signed for this Mac, not App Store notarized. The source intentionally targets `arm64-apple-macosx13.0`.
-# YOIOS-KIT
+For a tested local release plus matching app-source and complete pinned
+third-party-source archives, run:
+
+```zsh
+./Scripts/package-release.sh
+```
+
+The toolchain build downloads official release archives, verifies fixed SHA-256
+digests, builds the complete dependency closure for `arm64-apple-macosx13.0`,
+relocates every non-system dependency to bundle-relative `@rpath` paths, signs
+the nested payload, and runs an offline verifier. It requires Xcode Command Line
+Tools and `pkg-config` on the maintainer Mac; those are build requirements, not
+end-user requirements. Exact source URLs, checksums, build flags, and full
+license texts are shipped under `Contents/Resources/ThirdPartyNotices`.
+
+The local build is ad-hoc signed for this Mac, not App Store notarized. A public
+release should be signed with one Developer ID identity, notarized, and stapled.
+The source and bundled tools intentionally target `arm64-apple-macosx13.0`.

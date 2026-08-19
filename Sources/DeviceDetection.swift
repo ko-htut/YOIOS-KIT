@@ -97,35 +97,35 @@ enum ToolPaths {
     }
 
     static var ideviceID: String? {
-        firstExisting(["/opt/homebrew/bin/idevice_id", "/usr/local/bin/idevice_id"])
+        ToolchainRuntime.resolver.resolve(.ideviceID)?.executableURL.path
     }
 
     static var ideviceInfo: String? {
-        firstExisting(["/opt/homebrew/bin/ideviceinfo", "/usr/local/bin/ideviceinfo"])
+        ToolchainRuntime.resolver.resolve(.ideviceInfo)?.executableURL.path
     }
 
     static var enterRecovery: String? {
-        firstExisting(["/opt/homebrew/bin/ideviceenterrecovery", "/usr/local/bin/ideviceenterrecovery"])
+        ToolchainRuntime.resolver.resolve(.ideviceEnterRecovery)?.executableURL.path
     }
 
     static var idevicePair: String? {
-        firstExisting(["/opt/homebrew/bin/idevicepair", "/usr/local/bin/idevicepair"])
+        ToolchainRuntime.resolver.resolve(.idevicePair)?.executableURL.path
     }
 
     static var ideviceDiagnostics: String? {
-        firstExisting(["/opt/homebrew/bin/idevicediagnostics", "/usr/local/bin/idevicediagnostics"])
+        ToolchainRuntime.resolver.resolve(.ideviceDiagnostics)?.executableURL.path
     }
 
     static var ideviceCrashReport: String? {
-        firstExisting(["/opt/homebrew/bin/idevicecrashreport", "/usr/local/bin/idevicecrashreport"])
+        ToolchainRuntime.resolver.resolve(.ideviceCrashReport)?.executableURL.path
     }
 
     static var irecovery: String? {
-        firstExisting(["/opt/homebrew/bin/irecovery", "/usr/local/bin/irecovery"])
+        ToolchainRuntime.resolver.resolve(.irecovery)?.executableURL.path
     }
 
     static var hasConfigurator: Bool {
-        FileManager.default.isExecutableFile(atPath: cfgutil)
+        ToolchainRuntime.resolver.resolve(.cfgutil) != nil
     }
 }
 

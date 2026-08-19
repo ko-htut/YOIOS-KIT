@@ -26,6 +26,7 @@ enum ProcessRunner {
 
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = ToolchainExecutionEnvironment.sanitized()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
@@ -106,6 +107,7 @@ enum ProcessRunner {
 
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = ToolchainExecutionEnvironment.sanitized()
         process.standardOutput = pipe
         process.standardError = pipe
 

@@ -646,9 +646,40 @@ enum DeviceCenterCollector {
             identitySource,
             "Identity verification does not test individual components. Conflicting identifiers fail closed."
         ))
-        facts.upsert(fact("configuratorReady", .tooling, "Apple Configurator", ToolPaths.hasConfigurator ? "Ready" : "Not installed", ToolPaths.hasConfigurator ? .ready : .warning, "Mac filesystem", "Required for Apple Revive, Restore, and Factory Reset."))
-        let mobileReady = ToolPaths.ideviceInfo != nil && ToolPaths.idevicePair != nil && ToolPaths.irecovery != nil
-        facts.upsert(fact("mobileToolsReady", .tooling, "iPhone command-line tools", mobileReady ? "Ready" : "Missing", mobileReady ? .ready : .warning, "Mac filesystem", "Used for read-only identity/mode queries and one Normal-to-Recovery transition."))
+        let doctor = DependencyDoctor.inspect(resolver: ToolchainRuntime.resolver)
+        if let configurator = doctor.component(.appleConfigurator) {
+            let value = configurator.health == .ready
+                ? ["Ready", configurator.version.map { "v\($0)" }].compactMap { $0 }.joined(separator: " • ")
+                : "Not installed — advanced Apple operations unavailable"
+            facts.upsert(fact(
+                "configuratorReady", .tooling, "Apple Configurator", value,
+                configurator.health == .ready ? .ready : .warning,
+                configurator.sourceSummary,
+                "Optional for inspection; required for Apple Revive, Restore, and Factory Reset."
+            ))
+        }
+        if let mobile = doctor.component(.libimobiledevice) {
+            let value = [mobile.health == .ready ? "Ready" : "Incomplete", mobile.sourceSummary, mobile.version.map { "v\($0)" }]
+                .compactMap { $0 }
+                .joined(separator: " • ")
+            facts.upsert(fact(
+                "mobileToolsReady", .tooling, "libimobiledevice tools", value,
+                mobile.health == .ready ? .ready : .warning,
+                "Dependency Doctor",
+                "Built-in tools are preferred; Homebrew is only an optional fallback."
+            ))
+        }
+        if let recovery = doctor.component(.libirecovery) {
+            let value = [recovery.health == .ready ? "Ready" : "Missing", recovery.sourceSummary, recovery.version.map { "v\($0)" }]
+                .compactMap { $0 }
+                .joined(separator: " • ")
+            facts.upsert(fact(
+                "recoveryToolReady", .tooling, "libirecovery", value,
+                recovery.health == .ready ? .ready : .warning,
+                "Dependency Doctor",
+                "Provides protocol verification for Recovery and DFU modes."
+            ))
+        }
     }
 
     private static func addNormalIdentityFacts(base: [String: Any], cfg: [String: Any], to facts: inout DeviceFactAccumulator) {

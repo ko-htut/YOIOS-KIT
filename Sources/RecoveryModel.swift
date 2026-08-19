@@ -34,6 +34,10 @@ final class RecoveryModel: ObservableObject {
     @Published var deviceTimeline: [DeviceTimelineEvent] = []
     @Published var crashReportSummary: CrashReportCopySummary?
     @Published var crashCopyReviewRequired = false
+    @Published var dependencyDoctorSnapshot = DependencyDoctor.inspect(
+        resolver: ToolchainRuntime.resolver,
+        capturedAt: Date(timeIntervalSince1970: 0)
+    )
 
     private let workQueue = DispatchQueue(label: "local.minthanhtut.SE2RecoveryAssistant.work", qos: .userInitiated)
     private let monitorQueue = DispatchQueue(label: "local.minthanhtut.SE2RecoveryAssistant.monitor", qos: .userInitiated)
@@ -153,6 +157,7 @@ final class RecoveryModel: ObservableObject {
     }
 
     init(autoSelectFirmware: Bool = false) {
+        dependencyDoctorSnapshot = Self.captureDependencyDoctor()
         appendLog("SE2 Recovery Assistant started.")
         appendLog("No exploit, jailbreak, activation bypass, or raw write command is used.")
         recordTimeline(
@@ -161,6 +166,16 @@ final class RecoveryModel: ObservableObject {
             detail: "Waiting for a stable USB and Apple-device scan."
         )
         if autoSelectFirmware { autoSelectCachedIPSW() }
+    }
+
+    private static func captureDependencyDoctor() -> DependencyDoctorSnapshot {
+        let resolver = ToolchainRuntime.resolver
+        var outputs: [ToolKind: String] = [:]
+        if let brew = resolver.resolve(.homebrew) {
+            let result = ProcessRunner.run(brew.executableURL.path, ["--version"], timeout: 3)
+            if result.exitCode == 0 { outputs[.homebrew] = result.stdout }
+        }
+        return DependencyDoctor.inspect(resolver: resolver, versionOutputs: outputs)
     }
 
     var displayedDeviceCenterSnapshot: DeviceCenterSnapshot {
@@ -686,6 +701,7 @@ final class RecoveryModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ToolPaths.caffeinate)
         process.arguments = ["-dimsu", "-t", String(seconds)]
+        process.environment = ToolchainExecutionEnvironment.sanitized()
         do {
             try process.run()
             caffeinateProcess = process
@@ -1499,6 +1515,7 @@ final class RecoveryModel: ObservableObject {
             let keepAwake = Process()
             keepAwake.executableURL = URL(fileURLWithPath: ToolPaths.caffeinate)
             keepAwake.arguments = ["-dimsu", "-w", String(pid)]
+            keepAwake.environment = ToolchainExecutionEnvironment.sanitized()
             do {
                 try keepAwake.run()
                 caffeinateProcess = keepAwake

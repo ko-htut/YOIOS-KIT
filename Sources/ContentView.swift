@@ -23,6 +23,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var isDFUExpanded = false
     @State private var isLogExpanded = false
+    @State private var isDependencyDoctorExpanded = false
     @State private var selectedSection: AppWorkspaceSection
     private let rendersFullContent: Bool
 
@@ -400,17 +401,51 @@ struct ContentView: View {
     }
 
     private var readinessCard: some View {
-        UtilityCard(title: "System readiness", systemImage: "checkmark.shield") {
-            readinessRow(
-                model.cfgutilAvailable,
-                title: "Apple Configurator",
-                detail: model.cfgutilAvailable ? "Ready" : "Required"
-            )
-            readinessRow(
-                model.mobileToolsAvailable,
-                title: "iPhone CLI tools",
-                detail: model.mobileToolsAvailable ? "Ready" : "Homebrew tools missing"
-            )
+        let doctor = model.dependencyDoctorSnapshot
+        return UtilityCard(title: "System readiness", systemImage: "checkmark.shield") {
+            if let mobile = doctor.component(.libimobiledevice) {
+                dependencyRow(mobile)
+            }
+            if let recovery = doctor.component(.libirecovery) {
+                dependencyRow(recovery)
+            }
+            if let configurator = doctor.component(.appleConfigurator) {
+                dependencyRow(configurator)
+            }
+
+            DisclosureGroup(isExpanded: $isDependencyDoctorExpanded) {
+                VStack(alignment: .leading, spacing: 9) {
+                    if let homebrew = doctor.component(.homebrew) {
+                        dependencyRow(homebrew)
+                    }
+
+                    Divider()
+
+                    Text("Built-in tools are preferred and Homebrew is not required. Apple Configurator remains an optional Apple-installed component for Revive, Restore, and Factory Reset.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    ForEach(doctor.capabilities, id: \.capability) { capability in
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            Image(systemName: capability.isAvailable ? "checkmark.circle" : "minus.circle")
+                                .foregroundStyle(capability.isAvailable ? Color.green : Color.secondary)
+                                .accessibilityHidden(true)
+                            Text(capability.capability.rawValue)
+                                .font(.caption)
+                            Spacer(minLength: 6)
+                            Text(capability.isAvailable ? "Ready" : "Unavailable")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
+                Text("Dependency Doctor")
+                    .font(.callout.weight(.medium))
+            }
+            .accessibilityIdentifier("dependencyDoctorDisclosure")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("systemReadinessPanel")
@@ -779,6 +814,41 @@ struct ContentView: View {
                 .foregroundStyle(available ? Color.green : Color.red)
                 .multilineTextAlignment(.trailing)
         }
+    }
+
+    private func dependencyRow(_ status: DependencyComponentStatus) -> some View {
+        let available = status.health == .ready || status.health == .notRequired
+        let color: Color = {
+            switch status.health {
+            case .ready, .notRequired: return .green
+            case .degraded: return .orange
+            case .missing: return status.requirement == .advancedAppleOperations ? .orange : .red
+            }
+        }()
+        let detail = [status.sourceSummary, status.version.map { "v\($0)" }]
+            .compactMap { $0 }
+            .joined(separator: " • ")
+
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: available ? "checkmark.circle.fill" : (status.health == .degraded ? "exclamationmark.circle.fill" : "minus.circle.fill"))
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.component.title)
+                    .font(.callout)
+                Text(status.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            Text(detail)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(color)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
