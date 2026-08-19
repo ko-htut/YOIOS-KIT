@@ -15,11 +15,18 @@ private enum VisualScenario: String, CaseIterable {
     case operationRunning = "operation-running"
     case operationFailed = "operation-failed"
     case crashReview = "crash-review"
+    case settings
 }
 
 @main
 @MainActor
 struct VisualTestMain {
+    private static let testDefaults: UserDefaults = {
+        let defaults = UserDefaults(suiteName: "local.minthanhtut.YIOSKit.VisualTests")!
+        defaults.set("system", forKey: "yoiosAppearance")
+        return defaults
+    }()
+
     static func main() throws {
         guard CommandLine.arguments.count >= 3,
               let scenario = VisualScenario(rawValue: CommandLine.arguments[2]) else {
@@ -47,6 +54,7 @@ struct VisualTestMain {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         app.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
+        testDefaults.set("system", forKey: "yoiosAppearance")
 
         let model = RecoveryModel(autoSelectFirmware: false)
         configure(model, for: scenario)
@@ -56,10 +64,12 @@ struct VisualTestMain {
             initiallyExpandDFUGuide: scenario == .restoreOSDFUExpanded,
             initiallyExpandLog: scenario == .normalLogExpanded,
             rendersFullContent: capturePosition == "full",
-            initialSection: initialSection
+            initialSection: initialSection,
+            initialDestination: scenario == .settings ? .settings : nil
         )
             .frame(width: width, height: height)
             .environment(\.colorScheme, appearance == "dark" ? .dark : .light)
+            .defaultAppStorage(testDefaults)
         let hosting = NSHostingView(rootView: root)
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
         hosting.layoutSubtreeIfNeeded()
@@ -72,6 +82,10 @@ struct VisualTestMain {
             throw NSError(domain: "SE2VisualTest", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not encode UI snapshot."])
         }
         let destination = URL(fileURLWithPath: CommandLine.arguments[1])
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try png.write(to: destination, options: .atomic)
         print("\(scenario.rawValue) \(Int(width))x\(Int(height)) \(appearance) \(capturePosition): \(destination.path)")
     }
@@ -120,7 +134,7 @@ struct VisualTestMain {
             model.statusText = "No iPhone detected"
             model.detailText = "Connect one iPhone SE (2nd generation) directly with a data-capable USB cable, then scan again."
 
-        case .normal, .normalLogExpanded:
+        case .normal, .normalLogExpanded, .settings:
             applyNormalFixture(to: model)
             model.statusText = "Normal iOS mode verified"
             model.detailText = "The SE2 is trusted and communicating. Back up first if needed, enter Recovery for repair, or choose Factory Reset below."

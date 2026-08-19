@@ -20,12 +20,18 @@ private struct AXNodeSnapshot {
 @MainActor
 struct UIContractTestMain {
     private static let renderSize = NSSize(width: 1_040, height: 820)
+    private static let testDefaults: UserDefaults = {
+        let defaults = UserDefaults(suiteName: "local.minthanhtut.YIOSKit.UIContractTests")!
+        defaults.set("system", forKey: "yoiosAppearance")
+        return defaults
+    }()
     private static var failures: [String] = []
     private static var usedNativeAccessibility = false
 
     static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
+        testDefaults.set("system", forKey: "yoiosAppearance")
 
         for scenario in UIContractScenario.allCases {
             let model = fixture(for: scenario)
@@ -61,6 +67,20 @@ struct UIContractTestMain {
             }
             rendered.window.close()
         }
+
+        let settingsRender = render(
+            model: fixture(for: .normal),
+            colorScheme: .light,
+            initialDestination: .settings
+        )
+        expect(settingsRender.bitmapWasCreated, .normal, "Settings workspace did not render offscreen")
+        if usedNativeAccessibility {
+            let nodes = accessibilityTree(from: settingsRender.hostingView)
+            for identifier in ["settingsWorkspace", "settingsDependencyPanel", "settingsCapabilitiesPanel", "settingsBackButton"] {
+                expect(node(identifier, in: nodes) != nil, .normal, "missing Settings accessibility container \(identifier)")
+            }
+        }
+        settingsRender.window.close()
 
         let crashReviewModel = fixture(for: .normal)
         crashReviewModel.crashCopyReviewRequired = true
@@ -252,11 +272,21 @@ struct UIContractTestMain {
         let commonIdentifiers = [
             "appHeader",
             "scanButton",
-            "statusPanel",
-            "workspacePicker"
+            "workspacePicker",
+            "appearanceButton",
+            "settingsButton",
+            "appSidebar",
+            "sidebarReadinessButton",
+            "sidebarReadinessCard",
+            "localWorkspaceCard",
+            "appFooter"
         ]
         for identifier in commonIdentifiers {
             expect(node(identifier, in: nodes) != nil, scenario, "missing accessibility identifier \(identifier)")
+        }
+        for destination in AppSidebarDestination.allCases {
+            let identifier = sidebarIdentifier(for: destination)
+            expect(node(identifier, in: nodes) != nil, scenario, "missing sidebar accessibility identifier \(identifier)")
         }
 
         let defaultShowsOverview = scenario == .noDevice || scenario == .normal
@@ -264,19 +294,35 @@ struct UIContractTestMain {
             let overviewIdentifiers = [
                 "deviceCenterOverview",
                 "deviceCenterDetailStatus",
+                "deviceSummaryPanel",
                 "deviceHeroPanel",
+                "quickActionsPanel",
+                "dashboardReadinessPanel",
+                "connectionEvidencePanel",
+                "batteryPanel",
+                "storagePanel",
                 "refreshDeviceDetailsButton",
                 "copyDeviceSummaryButton",
                 "exportDeviceReportButton",
                 "appleCoverageButton",
                 "restartIPhoneButton",
-                "shutDownIPhoneButton"
+                "shutDownIPhoneButton",
+                "moreToolsButton"
             ]
             for identifier in overviewIdentifiers {
                 expect(node(identifier, in: nodes) != nil, scenario, "missing overview accessibility identifier \(identifier)")
             }
+            let shouldShowReveal = model.displayedDeviceCenterSnapshot.facts.contains {
+                $0.sensitivity != .none
+            }
+            expect(
+                (node("revealIdentifiersButton", in: nodes) != nil) == shouldShowReveal,
+                scenario,
+                "identifier reveal presence does not match sensitive dashboard facts"
+            )
         } else {
             let recoveryIdentifiers = [
+                "statusPanel",
                 "identityRail", "actionColumn", "targetIdentityPanel",
                 "systemReadinessPanel", "diagnosticLogToggle", "saveLogButton",
                 "recommendedActionPanel", "primaryActionButton", "recoveryPanel",
@@ -302,7 +348,7 @@ struct UIContractTestMain {
 
         assertButton(
             "scanButton",
-            expectedLabel: "Scan",
+            expectedLabel: "New Scan",
             expectedEnabled: !model.operationRunning && !model.destructiveWorkflowActive &&
                 !model.postResetReviewRequired && !model.isScanning && !model.isMonitoring &&
                 !model.isValidatingFirmware && !model.isLoadingDeviceCenter,
@@ -373,6 +419,12 @@ struct UIContractTestMain {
             .lowercased()
     }
 
+    private static func sidebarIdentifier(for destination: AppSidebarDestination) -> String {
+        "sidebar" + destination.rawValue
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "/", with: "") + "Button"
+    }
+
     private static func node(_ identifier: String, in nodes: [AXNodeSnapshot]) -> AXNodeSnapshot? {
         nodes.first { $0.identifier == identifier }
     }
@@ -380,11 +432,17 @@ struct UIContractTestMain {
     private static func render(
         model: RecoveryModel,
         colorScheme: ColorScheme,
-        initialSection: AppWorkspaceSection? = nil
+        initialSection: AppWorkspaceSection? = nil,
+        initialDestination: AppSidebarDestination? = nil
     ) -> (window: NSWindow, hostingView: NSHostingView<some View>, bitmapWasCreated: Bool) {
-        let root = ContentView(model: model, initialSection: initialSection)
+        let root = ContentView(
+            model: model,
+            initialSection: initialSection,
+            initialDestination: initialDestination
+        )
             .frame(width: renderSize.width, height: renderSize.height)
             .environment(\.colorScheme, colorScheme)
+            .defaultAppStorage(testDefaults)
         let hosting = NSHostingView(rootView: root)
         hosting.frame = NSRect(origin: .zero, size: renderSize)
 
@@ -454,33 +512,56 @@ struct UIContractTestMain {
 
     private static func assertSourceContractFallback() {
         let testURL = URL(fileURLWithPath: #filePath)
-        let sourceURL = testURL
+        let projectURL = testURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/ContentView.swift")
-        let deviceCenterURL = sourceURL.deletingLastPathComponent().appendingPathComponent("DeviceCenterViews.swift")
-        let modelURL = sourceURL.deletingLastPathComponent().appendingPathComponent("RecoveryModel.swift")
-        let supportURL = sourceURL.deletingLastPathComponent().appendingPathComponent("SupportFeatures.swift")
-        guard let contentSource = try? String(contentsOf: sourceURL, encoding: .utf8),
-              let deviceCenterSource = try? String(contentsOf: deviceCenterURL, encoding: .utf8),
+        let sourcesURL = projectURL.appendingPathComponent("Sources", isDirectory: true)
+        let modelURL = sourcesURL.appendingPathComponent("RecoveryModel.swift")
+        let supportURL = sourcesURL.appendingPathComponent("SupportFeatures.swift")
+        guard let sourceURLs = try? FileManager.default.contentsOfDirectory(
+                  at: sourcesURL,
+                  includingPropertiesForKeys: nil
+              ).filter({ $0.pathExtension == "swift" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }),
+              let sourceParts = try? sourceURLs.map({ try String(contentsOf: $0, encoding: .utf8) }),
               let modelSource = try? String(contentsOf: modelURL, encoding: .utf8),
               let supportSource = try? String(contentsOf: supportURL, encoding: .utf8) else {
-            failures.append("fallback could not read \(sourceURL.path)")
+            failures.append("fallback could not read Swift sources under \(sourcesURL.path)")
             return
         }
-        let source = contentSource + "\n" + deviceCenterSource
+        let source = sourceParts.joined(separator: "\n")
 
         let identifiers = [
             "scanButton",
             "statusPanel",
             "workspacePicker",
+            "appearanceButton",
+            "settingsButton",
+            "appSidebar",
+            "sidebarReadinessButton",
+            "sidebarReadinessCard",
+            "localWorkspaceCard",
+            "appFooter",
+            "settingsWorkspace",
+            "settingsDependencyPanel",
+            "settingsCapabilitiesPanel",
+            "settingsBackButton",
             "deviceCenterOverview",
+            "deviceCenterDetailStatus",
+            "deviceSummaryPanel",
             "deviceHeroPanel",
+            "quickActionsPanel",
+            "dashboardReadinessPanel",
+            "connectionEvidencePanel",
+            "batteryPanel",
+            "storagePanel",
             "refreshDeviceDetailsButton",
+            "revealIdentifiersButton",
             "copyDeviceSummaryButton",
             "exportDeviceReportButton",
+            "appleCoverageButton",
             "restartIPhoneButton",
             "shutDownIPhoneButton",
+            "moreToolsButton",
             "deviceEvidenceView",
             "evidenceRefreshButton",
             "evidenceExportButton",
@@ -515,6 +596,10 @@ struct UIContractTestMain {
             }
         }
 
+        if !source.contains(".accessibilityIdentifier(\"sidebar\\(") {
+            failures.append("source contract is missing dynamic sidebar accessibility identifiers")
+        }
+
         let bindings = [
             ".disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter)",
             ".disabled(!model.canRefreshDeviceCenter)",
@@ -532,7 +617,7 @@ struct UIContractTestMain {
         }
 
         let labelBindings = [
-            "Label(\"Scan\", systemImage: \"arrow.clockwise\")",
+            "Label(\"New Scan\", systemImage: \"arrow.clockwise\")",
             "Button(model.primaryActionTitle)",
             "Menu(\"Firmware\")",
             "Button(\"Try Revive\")",
@@ -543,7 +628,22 @@ struct UIContractTestMain {
             failures.append("source contract is missing control-label binding \(labelBinding)")
         }
 
-        let forbiddenClaims = ["No issues found", "Motherboard Status", "Find My OFF", "iCloud OFF"]
+        let forbiddenClaims = [
+            "No issues found",
+            "healthy and ready",
+            "Motherboard Status",
+            "Battery Status",
+            "Screen Status",
+            "Front Camera — Normal",
+            "Rear Camera — Normal",
+            "Fingerprint — Normal",
+            "Find My OFF",
+            "iCloud OFF",
+            "Jailbreak No",
+            "Battery Life",
+            "Charge Cycles",
+            "Hard Disk"
+        ]
         for claim in forbiddenClaims where source.localizedCaseInsensitiveContains(claim) {
             failures.append("source contract contains unsupported claim \(claim)")
         }

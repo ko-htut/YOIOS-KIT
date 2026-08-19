@@ -158,7 +158,7 @@ final class RecoveryModel: ObservableObject {
 
     init(autoSelectFirmware: Bool = false) {
         dependencyDoctorSnapshot = Self.captureDependencyDoctor()
-        appendLog("SE2 Recovery Assistant started.")
+        appendLog("YIOS-KIT started.")
         appendLog("No exploit, jailbreak, activation bypass, or raw write command is used.")
         recordTimeline(
             category: .app,

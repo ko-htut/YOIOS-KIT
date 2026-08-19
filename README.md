@@ -1,10 +1,10 @@
-# SE2 Device & Recovery Center
+# YIOS-KIT — SE2 Device & Recovery Center
 
 A native, Apple-silicon macOS app for detailed, source-attributed inspection and official recovery of an **iPhone SE (2nd generation / iPhone12,8)**. The app includes its own pinned libimobiledevice/libirecovery command-line toolchain, so the user does not need Homebrew. Apple Configurator remains an optional, separately installed Apple component for official erase/firmware operations. No jailbreak, exploit, activation bypass, or unsigned firmware path is included.
 
 ## What the app does
 
-- Uses a four-workspace interface: **Overview**, **Recovery**, **Evidence**, and **Activity**, with a pinned status banner that stays visible everywhere.
+- Uses a dashboard-style native interface with a grouped sidebar, **Overview**, **Recovery**, **Evidence**, and **Activity** workspaces, mode-aware status, Quick Actions, and source-labelled readiness cards.
 - Includes a **Dependency Doctor** that reports the exact built-in tool source/version, optional installed fallback, and which capabilities are ready. A complete built-in suite is always preferred; tools from different installations are never mixed within one capability.
 - Adds a **Backup Center** in Activity that hands control to Finder. The app does not automate, start, observe, or claim completion of a backup and never asks for a backup password.
 - Adds an explicit, exact-target **Crash & Panic Reports** copy workflow. It requires one trusted Normal-mode SE2, creates a new local folder with verified private permissions, always uses `idevicecrashreport --keep`, never requests deletion, never uploads through this app, and never retries automatically.
@@ -53,7 +53,7 @@ manual backup handoff.
 ## Use
 
 1. Double-click **SE2 Recovery Assistant.app**.
-2. Connect only the target SE2 and click **Scan**. The Overview automatically loads richer details only after Normal iOS and existing Trust are verified.
+2. Connect only the target SE2 and click **New Scan**. The Overview automatically loads richer details only after Normal iOS and existing Trust are verified.
 3. Use **Evidence** to see exactly which source supplied each fact. Use **Activity** for Backup Center, an explicit crash-report copy, the redacted USB/recovery timeline, the app log, and the exact last error.
 4. **Copy summary** and **Export report** are redacted by default. **Reveal for 60s** is required before sensitive values appear on screen.
 5. For a usable phone already in verified Normal iOS, guarded **Restart**, **Shut Down**, or **Factory Reset** become available. Factory Reset irreversibly removes all content and settings without reinstalling or updating iOS.

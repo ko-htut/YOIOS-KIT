@@ -18,6 +18,69 @@ enum AppWorkspaceSection: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppSidebarDestination: String, CaseIterable, Identifiable {
+    case dashboard = "Dashboard"
+    case devices = "Devices"
+    case reports = "Reports"
+    case history = "History"
+    case recovery = "Recovery"
+    case dfuRestore = "DFU / Restore"
+    case moreTools = "More Tools"
+    case guides = "Guides"
+    case logs = "Logs"
+    case settings = "Settings"
+
+    var id: String { rawValue }
+
+    var workspace: AppWorkspaceSection {
+        switch self {
+        case .dashboard, .devices: return .overview
+        case .recovery, .dfuRestore, .guides: return .recovery
+        case .settings: return .overview
+        case .reports: return .evidence
+        case .history, .moreTools, .logs: return .activity
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .dashboard: return "house.fill"
+        case .devices: return "iphone"
+        case .reports: return "doc.text"
+        case .history: return "clock.arrow.circlepath"
+        case .recovery: return "arrow.clockwise.circle"
+        case .dfuRestore: return "cross.case"
+        case .moreTools: return "square.grid.2x2"
+        case .guides: return "book.closed"
+        case .logs: return "list.clipboard"
+        case .settings: return "gearshape"
+        }
+    }
+
+    var group: SidebarGroup {
+        switch self {
+        case .dashboard, .devices, .reports, .history: return .main
+        case .recovery, .dfuRestore, .moreTools: return .tools
+        case .guides, .logs, .settings: return .resources
+        }
+    }
+
+    enum SidebarGroup: String, CaseIterable {
+        case main = "MAIN"
+        case tools = "TOOLS"
+        case resources = "RESOURCES"
+    }
+
+    static func canonical(for section: AppWorkspaceSection) -> AppSidebarDestination {
+        switch section {
+        case .overview: return .dashboard
+        case .recovery: return .recovery
+        case .evidence: return .reports
+        case .activity: return .history
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: RecoveryModel
     @Environment(\.colorScheme) private var colorScheme
@@ -25,6 +88,8 @@ struct ContentView: View {
     @State private var isLogExpanded = false
     @State private var isDependencyDoctorExpanded = false
     @State private var selectedSection: AppWorkspaceSection
+    @State private var selectedDestination: AppSidebarDestination
+    @State private var appearancePreference = "system"
     private let rendersFullContent: Bool
 
     init(
@@ -32,12 +97,23 @@ struct ContentView: View {
         initiallyExpandDFUGuide: Bool = false,
         initiallyExpandLog: Bool = false,
         rendersFullContent: Bool = false,
-        initialSection: AppWorkspaceSection? = nil
+        initialSection: AppWorkspaceSection? = nil,
+        initialDestination: AppSidebarDestination? = nil
     ) {
         self.model = model
         _isDFUExpanded = State(initialValue: initiallyExpandDFUGuide)
         _isLogExpanded = State(initialValue: initiallyExpandLog)
-        _selectedSection = State(initialValue: initialSection ?? Self.defaultSection(for: model))
+        let section = initialDestination?.workspace ?? initialSection ?? Self.defaultSection(for: model)
+        _selectedSection = State(initialValue: section)
+        let destination: AppSidebarDestination
+        if model.crashCopyReviewRequired {
+            destination = .logs
+        } else if model.postResetReviewRequired {
+            destination = .recovery
+        } else {
+            destination = initialDestination ?? AppSidebarDestination.canonical(for: section)
+        }
+        _selectedDestination = State(initialValue: destination)
         self.rendersFullContent = rendersFullContent
     }
 
@@ -122,35 +198,60 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            statusBanner
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-            Divider()
 
-            workspaceContent
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: 226)
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    if (selectedDestination != .dashboard && selectedDestination != .devices) ||
+                        model.postResetReviewRequired || model.crashCopyReviewRequired {
+                        statusBanner
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 11)
+                        Divider()
+                    }
+
+                    workspaceContent
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            Divider()
+            footer
         }
-        .frame(minWidth: 900, idealWidth: 1120, minHeight: 700, idealHeight: 820)
+        .frame(minWidth: 1_040, idealWidth: 1_420, minHeight: 700, idealHeight: 880)
         .background(Color(nsColor: .windowBackgroundColor))
+        .preferredColorScheme(preferredColorScheme)
         .onChange(of: model.postResetReviewRequired) { required in
-            if required { selectedSection = .recovery }
+            if required { select(.recovery) }
         }
         .onChange(of: model.crashCopyReviewRequired) { required in
-            if required { selectedSection = .activity }
+            if required { select(.logs) }
         }
         .onChange(of: model.snapshot.mode) { mode in
             if [.recovery, .dfu, .restoreOS, .usbUnavailable, .unknown, .multiple].contains(mode),
                selectedSection == .overview {
-                selectedSection = .recovery
+                select(.recovery)
+            }
+        }
+        .onChange(of: selectedSection) { section in
+            if selectedDestination.workspace != section {
+                selectedDestination = AppSidebarDestination.canonical(for: section)
             }
         }
     }
 
     @ViewBuilder
     private var workspaceContent: some View {
-        switch selectedSection {
-        case .overview:
-            DeviceCenterOverviewView(model: model)
-        case .recovery:
+        switch selectedDestination {
+        case .dashboard, .devices:
+            DashboardOverviewView(model: model) {
+                select(.moreTools)
+            }
+        case .recovery, .dfuRestore, .guides:
             GeometryReader { geometry in
                 if geometry.size.width >= 820 {
                     if rendersFullContent {
@@ -162,9 +263,13 @@ struct ContentView: View {
                     stackedBody
                 }
             }
-        case .evidence:
+        case .settings:
+            DashboardSettingsView(model: model) {
+                select(.dashboard)
+            }
+        case .reports:
             DeviceEvidenceView(model: model)
-        case .activity:
+        case .history, .moreTools, .logs:
             DeviceActivityView(model: model)
         }
     }
@@ -178,10 +283,10 @@ struct ContentView: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("SE2 Device Center")
+                Text("YIOS-KIT")
                     .font(.title2.weight(.semibold))
-                Text("Detailed evidence + official Apple recovery")
-                    .font(.callout)
+                Text("iOS Recovery & Diagnostic Suite")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -208,19 +313,264 @@ struct ContentView: View {
             }
 
             Button {
+                cycleAppearance()
+            } label: {
+                Image(systemName: appearanceSymbol)
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help("Appearance: \(appearancePreference.capitalized)")
+            .accessibilityLabel(appearanceAccessibilityLabel)
+            .accessibilityIdentifier("appearanceButton")
+
+            Button {
+                select(.settings)
+            } label: {
+                Image(systemName: "gearshape")
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help("Open settings and system readiness")
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("settingsButton")
+
+            Button {
                 model.scan()
             } label: {
-                Label("Scan", systemImage: "arrow.clockwise")
+                Label("New Scan", systemImage: "arrow.clockwise")
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter)
             .accessibilityIdentifier("scanButton")
         }
-        .padding(.horizontal, 20)
+        .padding(.leading, 88)
+        .padding(.trailing, 20)
         .padding(.vertical, 11)
         .frame(minHeight: 64)
         .background(.regularMaterial)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("appHeader")
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(AppSidebarDestination.SidebarGroup.allCases, id: \.self) { group in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(group.rawValue)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 12)
+
+                            ForEach(AppSidebarDestination.allCases.filter { $0.group == group }) { destination in
+                                sidebarButton(destination)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 16)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                sidebarReadinessCard
+
+                HStack(spacing: 9) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.blue.opacity(colorScheme == .dark ? 0.24 : 0.12))
+                        Image(systemName: "person.crop.circle")
+                            .foregroundStyle(.blue)
+                    }
+                    .frame(width: 30, height: 30)
+                    .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Personal workspace")
+                            .font(.caption.weight(.semibold))
+                        Text("Local on this Mac")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("localWorkspaceCard")
+            }
+            .padding(12)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("appSidebar")
+    }
+
+    private func sidebarButton(_ destination: AppSidebarDestination) -> some View {
+        let isSelected = selectedDestination == destination
+        return Button {
+            select(destination)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: destination.systemImage)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .frame(width: 18)
+                    .foregroundStyle(isSelected ? Color.blue : Color.secondary)
+                Text(destination.rawValue)
+                    .font(.callout.weight(isSelected ? .semibold : .regular))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.blue.opacity(colorScheme == .dark ? 0.20 : 0.09) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(destination.rawValue)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("sidebar\(destination.rawValue.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "/", with: ""))Button")
+    }
+
+    private var sidebarReadinessCard: some View {
+        let mobile = model.dependencyDoctorSnapshot.component(.libimobiledevice)
+        let recovery = model.dependencyDoctorSnapshot.component(.libirecovery)
+        let coreReady = mobile?.health == .ready && recovery?.health == .ready
+        return VStack(alignment: .leading, spacing: 7) {
+            Label(
+                coreReady ? "Inspection tools ready" : "Tool attention needed",
+                systemImage: coreReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(coreReady ? Color.green : Color.orange)
+
+            Text(coreReady
+                 ? "Built-in device and recovery inspection tools are available."
+                 : "Open Settings to review missing or incompatible dependencies.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("View readiness") { select(.settings) }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+                .accessibilityIdentifier("sidebarReadinessButton")
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke((coreReady ? Color.green : Color.orange).opacity(0.22), lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sidebarReadinessCard")
+    }
+
+    private var footer: some View {
+        HStack(spacing: 9) {
+            Text("YIOS-KIT \(appVersionLabel)")
+                .font(.caption.weight(.semibold))
+            Text("•")
+                .foregroundStyle(.tertiary)
+            Circle()
+                .fill(footerStatusColor)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            Text(footerStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            Label("Actions require an explicit choice", systemImage: "shield.lefthalf.filled")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 42)
+        .background(.bar)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("appFooter")
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appearancePreference {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+
+    private var appearanceSymbol: String {
+        switch appearancePreference {
+        case "light": return "sun.max"
+        case "dark": return "moon.stars"
+        default: return "circle.lefthalf.filled"
+        }
+    }
+
+    private var appearanceAccessibilityLabel: String {
+        switch appearancePreference {
+        case "light": return "Appearance is Light. Switch to Dark appearance"
+        case "dark": return "Appearance is Dark. Switch to System appearance"
+        default: return "Appearance follows System. Switch to Light appearance"
+        }
+    }
+
+    private var appVersionLabel: String {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !version.isEmpty else {
+            return "Development"
+        }
+        return "v\(version)"
+    }
+
+    private var footerStatusText: String {
+        if model.crashCopyReviewRequired { return "Crash-copy review required" }
+        if model.postResetReviewRequired { return "Hello-screen review required" }
+        if model.operationRunning { return model.operationStep.isEmpty ? "Operation in progress" : model.operationStep }
+        if model.isMonitoring { return "Watching USB mode changes" }
+        if model.snapshot.deviceCount == 0 { return "No iPhone detected" }
+        if model.snapshot.deviceCount > 1 { return "Multiple devices detected" }
+        return "\(compactModeTitle) • \(model.snapshot.modeVerified ? "protocol verified" : "USB evidence only")"
+    }
+
+    private var footerStatusColor: Color {
+        if model.crashCopyReviewRequired || model.snapshot.deviceCount > 1 { return .red }
+        if model.postResetReviewRequired || model.snapshot.mode == .restoreOS || model.snapshot.mode == .usbUnavailable { return .orange }
+        if model.snapshot.mode == .normal && model.snapshot.modeVerified { return .green }
+        return modeColor
+    }
+
+    private func select(_ destination: AppSidebarDestination) {
+        selectedDestination = destination
+        selectedSection = destination.workspace
+    }
+
+    private func cycleAppearance() {
+        switch appearancePreference {
+        case "system": appearancePreference = "light"
+        case "light": appearancePreference = "dark"
+        default: appearancePreference = "system"
+        }
     }
 
     private var statusBanner: some View {
@@ -390,11 +740,9 @@ struct ContentView: View {
 
             identifierRow(
                 "ECID",
-                model.postResetReviewRequired
-                    ? DeviceCenterPrivacy.maskIdentifier(displaySnapshot.displayECID)
-                    : displaySnapshot.displayECID
+                maskTargetIdentifier(displaySnapshot.displayECID)
             )
-            identifierRow("UDID", displaySnapshot.displayUDID)
+            identifierRow("UDID", maskTargetIdentifier(displaySnapshot.displayUDID))
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("targetIdentityPanel")
@@ -799,6 +1147,10 @@ struct ContentView: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func maskTargetIdentifier(_ value: String) -> String {
+        value == "—" ? value : DeviceCenterPrivacy.maskIdentifier(value)
     }
 
     private func readinessRow(_ available: Bool, title: String, detail: String) -> some View {

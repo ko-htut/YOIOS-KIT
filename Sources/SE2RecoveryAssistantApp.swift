@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lockFD = -1
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "SE2 Recovery Assistant is already open"
+            alert.messageText = "YIOS-KIT is already open"
             alert.informativeText = "Use the existing window. Only one recovery controller may run at a time."
             alert.runModal()
             NSApplication.shared.terminate(nil)
@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag, let window = sender.windows.first(where: { $0.title == "SE2 Recovery Assistant" }) {
+        if !flag, let window = sender.windows.first(where: { $0.title == "YIOS-KIT" }) {
             window.makeKeyAndOrderFront(nil)
         }
         return true
@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureMainWindow() {
-        for window in NSApplication.shared.windows where window.title == "SE2 Recovery Assistant" {
+        for window in NSApplication.shared.windows where window.title == "YIOS-KIT" {
             window.isReleasedWhenClosed = false
             window.standardWindowButton(.closeButton)?.isEnabled = windowClosingEnabled
         }
@@ -81,7 +81,7 @@ struct SE2RecoveryAssistantApp: App {
     @StateObject private var model = RecoveryModel()
 
     var body: some Scene {
-        Window("SE2 Recovery Assistant", id: "main") {
+        Window("YIOS-KIT", id: "main") {
             ContentView(model: model)
                 .onAppear {
                     appDelegate.model = model
@@ -98,7 +98,8 @@ struct SE2RecoveryAssistantApp: App {
                     appDelegate.setWindowClosingEnabled(!(active.0 || active.1 || active.2 || active.3 || state.1))
                 }
         }
-        .defaultSize(width: 1120, height: 820)
+        .defaultSize(width: 1420, height: 880)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
         }
