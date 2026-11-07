@@ -46,14 +46,16 @@ struct DeviceSnapshot: Equatable {
     var usbLinkSpeed: Int?
     var usbPowerSinkAllocation: Int?
     var usbPowerSinkCapability: Int?
+    var identityConflict: Bool = false
+    var recoveryIdentityQueryVerified: Bool = false
 
     var isSE2: Bool {
-        let productMatch = productType.map { $0 == "iPhone12,8" }
-        let hardwareMatch = hardwareModel.map { $0.lowercased() == "d79ap" }
-        if let productMatch, let hardwareMatch {
-            return productMatch && hardwareMatch
-        }
-        return productMatch ?? hardwareMatch ?? false
+        !identityConflict && SupportedDeviceCatalog.isExactSE2(
+            productType: productType,
+            hardwareModel: hardwareModel,
+            chipID: chipID,
+            boardID: boardID
+        )
     }
 
     var pidHex: String {
@@ -68,7 +70,11 @@ struct DeviceSnapshot: Equatable {
 struct PostFactoryResetTracker {
     private(set) var observedTargetTransition = false
 
-    mutating func observe(_ detected: DeviceSnapshot, pinnedECID: String) -> Bool {
+    mutating func observe(
+        _ detected: DeviceSnapshot,
+        pinnedECID: String,
+        pinnedModel: SupportedDeviceModel
+    ) -> Bool {
         let sameTarget = DeviceDetector.normalizeECID(detected.ecid) ==
             DeviceDetector.normalizeECID(pinnedECID)
         let targetStillOnNormalUSB = sameTarget &&
@@ -81,7 +87,11 @@ struct PostFactoryResetTracker {
             return false
         }
         return observedTargetTransition &&
-            DeviceDetector.matchesPostFactoryResetCandidate(detected, pinnedECID: pinnedECID)
+            DeviceDetector.matchesPostFactoryResetCandidate(
+                detected,
+                pinnedECID: pinnedECID,
+                pinnedModel: pinnedModel
+            )
     }
 }
 
@@ -129,7 +139,108 @@ enum ToolPaths {
     }
 }
 
+struct RecoveryIdentityQueryEvidence: Equatable {
+    let ecid: String?
+    let productType: String?
+    let hardwareModel: String?
+    let chipID: String?
+    let boardID: String?
+    let serialNumber: String?
+    let marketingName: String?
+
+    func matches(requestedECID: String) -> Bool {
+        guard let ecid else { return false }
+        return DeviceDetector.normalizeECID(ecid) ==
+            DeviceDetector.normalizeECID(requestedECID)
+    }
+
+    func exactModel(for requestedECID: String) -> SupportedDeviceModel? {
+        guard matches(requestedECID: requestedECID),
+              let productType, let hardwareModel, let chipID, let boardID else {
+            return nil
+        }
+        return SupportedDeviceCatalog.model(
+            productType: productType,
+            hardwareModel: hardwareModel,
+            chipID: chipID,
+            boardID: boardID
+        )
+    }
+}
+
 enum DeviceDetector {
+    private static func mergeIdentityValue(
+        _ incoming: String?,
+        current: inout String?,
+        caseInsensitive: Bool,
+        conflict: inout Bool
+    ) {
+        guard let incoming = incoming?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !incoming.isEmpty else { return }
+        guard let existing = current?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !existing.isEmpty else {
+            current = incoming
+            return
+        }
+        let agrees = caseInsensitive
+            ? existing.caseInsensitiveCompare(incoming) == .orderedSame
+            : existing == incoming
+        if !agrees { conflict = true }
+    }
+
+    private static func mergeNumericIdentityValue(
+        _ incoming: String?,
+        current: inout String?,
+        conflict: inout Bool
+    ) {
+        guard let incoming, !incoming.isEmpty else { return }
+        guard let existing = current, !existing.isEmpty else {
+            current = incoming
+            return
+        }
+        guard SupportedDeviceCatalog.numericIdentifier(existing) ==
+                SupportedDeviceCatalog.numericIdentifier(incoming) else {
+            conflict = true
+            return
+        }
+    }
+
+    static func parseRecoveryIdentityQuery(_ text: String) -> RecoveryIdentityQueryEvidence {
+        var queriedECID: String?
+        var queriedProductType: String?
+        var queriedHardwareModel: String?
+        var queriedChipID: String?
+        var queriedBoardID: String?
+        var queriedSerialNumber: String?
+        var queriedMarketingName: String?
+        for line in text.components(separatedBy: .newlines) {
+            let pair = line.split(separator: ":", maxSplits: 1).map(String.init)
+            guard pair.count == 2 else { continue }
+            let key = pair[0].trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let value = pair[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            switch key {
+            case "ECID": queriedECID = ecidHex(value)
+            case "PRODUCT": queriedProductType = value
+            case "MODEL": queriedHardwareModel = value
+            case "CPID": queriedChipID = value
+            case "BDID": queriedBoardID = value
+            case "SRNM": queriedSerialNumber = value
+            case "NAME": queriedMarketingName = value
+            default: break
+            }
+        }
+        return RecoveryIdentityQueryEvidence(
+            ecid: queriedECID,
+            productType: queriedProductType,
+            hardwareModel: queriedHardwareModel,
+            chipID: queriedChipID,
+            boardID: queriedBoardID,
+            serialNumber: queriedSerialNumber,
+            marketingName: queriedMarketingName
+        )
+    }
+
     private static func integer(in text: String, pattern: String) -> Int? {
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
@@ -206,7 +317,11 @@ enum DeviceDetector {
             let powerAllocation = integer(in: block, pattern: "\\\"UsbPowerSinkAllocation\\\"\\s*=\\s*([0-9]+)")
             let powerCapability = integer(in: block, pattern: "\\\"UsbPowerSinkCapability\\\"\\s*=\\s*([0-9]+)")
             let product = string(in: block, pattern: "\\\"kUSBProductString\\\"\\s*=\\s*\\\"([^\\\"]+)\\\"") ?? ""
-            let knownPID = [0x1227, 0x1280, 0x1281, 0x1282, 0x1283, 0x12A8, 0x12A9, 0x12AC].contains(pid ?? -1)
+            // 0x1881 is the KIS/Debug USB transport used by some newer
+            // devices while entering DFU. It is intentionally recognized as
+            // an Apple-mobile target but remains `.unknown`: the classic
+            // libirecovery verifier bundled here cannot attest that transport.
+            let knownPID = [0x1227, 0x1280, 0x1281, 0x1282, 0x1283, 0x1881, 0x12A8, 0x12A9, 0x12AC].contains(pid ?? -1)
             let looksLikeIPhone = product.localizedCaseInsensitiveContains("iPhone") ||
                 product.localizedCaseInsensitiveContains("Recovery") || ecidDecimal != nil || knownPID
             guard looksLikeIPhone else { continue }
@@ -297,12 +412,14 @@ enum DeviceDetector {
         _ detected: DeviceSnapshot,
         pinnedECID: String,
         pinnedUDID: String,
-        pinnedLocation: Int
+        pinnedLocation: Int,
+        pinnedModel: SupportedDeviceModel? = nil
     ) -> Bool {
         detected.deviceCount == 1 &&
         detected.mode == .normal &&
         detected.modeVerified &&
-        detected.isSE2 &&
+        detected.hasVerifiedSupportedDeviceIdentity &&
+        (pinnedModel == nil || detected.supportedDeviceModel == pinnedModel) &&
         normalizeECID(detected.ecid) == normalizeECID(pinnedECID) &&
         detected.udid?.caseInsensitiveCompare(pinnedUDID) == .orderedSame &&
         detected.locationID == pinnedLocation
@@ -310,13 +427,31 @@ enum DeviceDetector {
 
     static func matchesPostFactoryResetCandidate(
         _ detected: DeviceSnapshot,
-        pinnedECID: String
+        pinnedECID: String,
+        pinnedModel: SupportedDeviceModel
     ) -> Bool {
-        detected.deviceCount == 1 &&
+        guard detected.deviceCount == 1 &&
         (detected.usbPID == 0x12A8 || detected.usbPID == 0x12A9) &&
         (detected.mode == .normal || detected.mode == .usbUnavailable) &&
-        detected.isSE2 &&
-        normalizeECID(detected.ecid) == normalizeECID(pinnedECID)
+        !detected.identityConflict &&
+        normalizeECID(detected.ecid) == normalizeECID(pinnedECID),
+        let productType = detected.productType,
+        SupportedDeviceCatalog.model(productType: productType) == pinnedModel else {
+            return false
+        }
+        if let hardwareModel = detected.hardwareModel,
+           SupportedDeviceCatalog.model(hardwareModel: hardwareModel) != pinnedModel {
+            return false
+        }
+        if let chipID = detected.chipID,
+           SupportedDeviceCatalog.numericIdentifier(chipID) != pinnedModel.chipID {
+            return false
+        }
+        if let boardID = detected.boardID,
+           SupportedDeviceCatalog.numericIdentifier(boardID) != pinnedModel.boardID {
+            return false
+        }
+        return true
     }
 
     static func enriched() -> DeviceSnapshot {
@@ -339,8 +474,18 @@ enum DeviceDetector {
                           let productType = values["ProductType"] as? String else { continue }
                     snapshot.mode = .normal
                     snapshot.udid = candidate
-                    snapshot.productType = productType
-                    snapshot.hardwareModel = values["HardwareModel"] as? String
+                    mergeIdentityValue(
+                        productType,
+                        current: &snapshot.productType,
+                        caseInsensitive: true,
+                        conflict: &snapshot.identityConflict
+                    )
+                    mergeIdentityValue(
+                        values["HardwareModel"] as? String,
+                        current: &snapshot.hardwareModel,
+                        caseInsensitive: true,
+                        conflict: &snapshot.identityConflict
+                    )
                     snapshot.productVersion = values["ProductVersion"] as? String
                     snapshot.buildVersion = values["BuildVersion"] as? String
                     snapshot.activationState = values["ActivationState"] as? String
@@ -379,7 +524,12 @@ enum DeviceDetector {
                     guard keyMatches,
                           let value = rawValue as? [String: Any] else { continue }
                     snapshot.ecid = ecidHex(value["ECID"]) ?? ecidHex(key) ?? snapshot.ecid
-                    snapshot.productType = value["deviceType"] as? String
+                    mergeIdentityValue(
+                        value["deviceType"] as? String,
+                        current: &snapshot.productType,
+                        caseInsensitive: true,
+                        conflict: &snapshot.identityConflict
+                    )
                     snapshot.udid = value["UDID"] as? String ?? snapshot.udid
                 }
             }
@@ -395,8 +545,10 @@ enum DeviceDetector {
                     let key = pair[0]
                     let value = pair[1].trimmingCharacters(in: .whitespaces)
                     switch key {
-                    case "ProductType": snapshot.productType = value
-                    case "HardwareModel": snapshot.hardwareModel = value
+                    case "ProductType":
+                        mergeIdentityValue(value, current: &snapshot.productType, caseInsensitive: true, conflict: &snapshot.identityConflict)
+                    case "HardwareModel":
+                        mergeIdentityValue(value, current: &snapshot.hardwareModel, caseInsensitive: true, conflict: &snapshot.identityConflict)
                     case "ProductVersion": snapshot.productVersion = value
                     case "BuildVersion": snapshot.buildVersion = value
                     case "ActivationState": snapshot.activationState = value
@@ -411,8 +563,9 @@ enum DeviceDetector {
         }
 
         if (snapshot.mode == .recovery || snapshot.mode == .dfu),
-           let irecovery = ToolPaths.irecovery {
-            let targetArguments = snapshot.ecid.map { ["-i", $0] } ?? []
+           let irecovery = ToolPaths.irecovery,
+           let requestedECID = snapshot.ecid {
+            let targetArguments = ["-i", requestedECID]
             let modeResult = ProcessRunner.run(irecovery, targetArguments + ["-m"], timeout: 8)
             let modeText = (modeResult.stdout + modeResult.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
             if modeResult.exitCode == 0, modeText == "Recovery Mode" {
@@ -425,20 +578,37 @@ enum DeviceDetector {
             }
             let query = ProcessRunner.run(irecovery, targetArguments + ["-q"], timeout: 8)
             let combined = query.stdout + "\n" + query.stderr
-            for line in combined.components(separatedBy: .newlines) {
-                let pair = line.split(separator: ":", maxSplits: 1).map(String.init)
-                guard pair.count == 2 else { continue }
-                let key = pair[0].trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                let value = pair[1].trimmingCharacters(in: .whitespacesAndNewlines)
-                switch key {
-                case "ECID": snapshot.ecid = ecidHex(value) ?? snapshot.ecid
-                case "PRODUCT": snapshot.productType = value
-                case "MODEL": snapshot.hardwareModel = value
-                case "CPID": snapshot.chipID = value
-                case "BDID": snapshot.boardID = value
-                case "SRNM": snapshot.serialNumber = value
-                case "NAME": snapshot.marketingName = value
-                default: break
+            let evidence = parseRecoveryIdentityQuery(combined)
+            if query.exitCode == 0,
+               evidence.matches(requestedECID: requestedECID) {
+                snapshot.ecid = evidence.ecid
+                mergeIdentityValue(
+                    evidence.productType,
+                    current: &snapshot.productType,
+                    caseInsensitive: true,
+                    conflict: &snapshot.identityConflict
+                )
+                mergeIdentityValue(
+                    evidence.hardwareModel,
+                    current: &snapshot.hardwareModel,
+                    caseInsensitive: true,
+                    conflict: &snapshot.identityConflict
+                )
+                mergeNumericIdentityValue(
+                    evidence.chipID,
+                    current: &snapshot.chipID,
+                    conflict: &snapshot.identityConflict
+                )
+                mergeNumericIdentityValue(
+                    evidence.boardID,
+                    current: &snapshot.boardID,
+                    conflict: &snapshot.identityConflict
+                )
+                snapshot.serialNumber = evidence.serialNumber ?? snapshot.serialNumber
+                snapshot.marketingName = evidence.marketingName ?? snapshot.marketingName
+                if let queriedModel = evidence.exactModel(for: requestedECID) {
+                    snapshot.recoveryIdentityQueryVerified =
+                        !snapshot.identityConflict && snapshot.supportedDeviceModel == queriedModel
                 }
             }
         }
@@ -450,12 +620,30 @@ struct IPSWInfo: Equatable {
     let url: URL
     let productVersion: String
     let buildVersion: String
-    let compatibleWithSE2: Bool
+    let compatibleModels: Set<SupportedDeviceModel>
     let fileSize: UInt64
     let modificationDate: Date
     let sampledSHA256: String
 
     var title: String { "iOS \(productVersion) (\(buildVersion))" }
+
+    var containsSupportedDevice: Bool { !compatibleModels.isEmpty }
+    var compatibleWithSE2: Bool { compatibleModels.contains(SupportedDeviceCatalog.se2) }
+
+    func isCompatible(with model: SupportedDeviceModel) -> Bool {
+        compatibleModels.contains(model)
+    }
+
+    var compatibilityDescription: String {
+        let products = compatibleModels.map(\.productType).sorted()
+        return products.isEmpty ? "no supported target" : products.joined(separator: ", ")
+    }
+}
+
+struct IPSWManifestInfo: Equatable {
+    let productVersion: String
+    let buildVersion: String
+    let compatibleModels: Set<SupportedDeviceModel>
 }
 
 enum IPSWValidator {
@@ -479,7 +667,7 @@ enum IPSWValidator {
                 url: url,
                 productVersion: manifest.productVersion,
                 buildVersion: manifest.buildVersion,
-                compatibleWithSE2: manifest.compatible,
+                compatibleModels: manifest.compatibleModels,
                 fileSize: after.size,
                 modificationDate: after.modificationDate,
                 sampledSHA256: fingerprint
@@ -501,7 +689,8 @@ enum IPSWValidator {
                 throw validationError(15, "The selected IPSW fingerprint changed after validation.")
             }
             let manifest = try inspectManifest(info.url)
-            guard manifest.compatible,
+            guard !manifest.compatibleModels.isEmpty,
+                  manifest.compatibleModels == info.compatibleModels,
                   manifest.productVersion == info.productVersion,
                   manifest.buildVersion == info.buildVersion else {
                 throw validationError(16, "The selected IPSW BuildManifest no longer matches the confirmed firmware.")
@@ -512,31 +701,62 @@ enum IPSWValidator {
         }
     }
 
-    private static func inspectManifest(_ url: URL) throws -> (
-        productVersion: String,
-        buildVersion: String,
-        compatible: Bool
-    ) {
+    /// Reads only BuildManifest.plist. This is used to find a compatible
+    /// Configurator-cache candidate before the selected archive receives the
+    /// full ZIP-integrity and fingerprint validation in `inspect`.
+    static func inspectManifestInfo(_ url: URL) -> Result<IPSWManifestInfo, Error> {
+        do {
+            return .success(try inspectManifest(url))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private static func inspectManifest(_ url: URL) throws -> IPSWManifestInfo {
         let result = ProcessRunner.run(ToolPaths.unzip, ["-p", url.path, "BuildManifest.plist"], timeout: 20)
         guard result.exitCode == 0, !result.stdoutData.isEmpty else {
             throw validationError(10, "BuildManifest.plist could not be read from this IPSW.")
         }
-        let plist = try PropertyListSerialization.propertyList(from: result.stdoutData, options: [], format: nil)
+        return try inspectManifestData(result.stdoutData)
+    }
+
+    static func inspectManifestData(_ data: Data) throws -> IPSWManifestInfo {
+        let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
         guard let dict = plist as? [String: Any] else {
             throw validationError(11, "The IPSW BuildManifest is invalid.")
         }
         let productVersion = dict["ProductVersion"] as? String ?? "Unknown"
         let buildVersion = dict["ProductBuildVersion"] as? String ?? "Unknown"
-        let supported = dict["SupportedProductTypes"] as? [String] ?? []
-        var compatible = supported.contains("iPhone12,8")
-        if !compatible, let identities = dict["BuildIdentities"] as? [[String: Any]] {
-            compatible = identities.contains { identity in
+        let supportedProducts = Set(dict["SupportedProductTypes"] as? [String] ?? [])
+        var compatibleModels = Set<SupportedDeviceModel>()
+        if let identities = dict["BuildIdentities"] as? [[String: Any]] {
+            for identity in identities {
                 guard let info = identity["Info"] as? [String: Any],
-                      let deviceClass = info["DeviceClass"] as? String else { return false }
-                return deviceClass.lowercased() == "d79ap"
+                      let deviceClass = info["DeviceClass"] as? String,
+                      let variant = info["Variant"] as? String else { continue }
+                let normalizedVariant = variant.lowercased()
+                guard normalizedVariant.contains("customer erase"),
+                      !normalizedVariant.contains("research") else { continue }
+                let chipID = manifestIdentifier(identity["ApChipID"] ?? info["ApChipID"])
+                let boardID = manifestIdentifier(identity["ApBoardID"] ?? info["ApBoardID"])
+                guard let model = SupportedDeviceCatalog.all.first(where: {
+                    $0.hardwareModel.caseInsensitiveCompare(deviceClass) == .orderedSame &&
+                    $0.chipID == chipID && $0.boardID == boardID &&
+                    supportedProducts.contains($0.productType)
+                }) else { continue }
+                compatibleModels.insert(model)
             }
         }
-        return (productVersion, buildVersion, compatible)
+        return IPSWManifestInfo(
+            productVersion: productVersion,
+            buildVersion: buildVersion,
+            compatibleModels: compatibleModels
+        )
+    }
+
+    private static func manifestIdentifier(_ value: Any?) -> UInt64? {
+        if let number = value as? NSNumber { return number.uint64Value }
+        return SupportedDeviceCatalog.numericIdentifier(value as? String)
     }
 
     private static func fileIdentity(_ url: URL) throws -> (size: UInt64, modificationDate: Date) {

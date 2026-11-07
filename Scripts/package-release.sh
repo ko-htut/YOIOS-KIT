@@ -5,10 +5,11 @@ script_dir="${0:A:h}"
 project_dir="${script_dir:h}"
 output_dir="${project_dir}/outputs"
 cache_dir="${YIOS_TOOLCHAIN_CACHE:-${project_dir}/.build-cache/toolchain-downloads}"
-app_name="SE2 Recovery Assistant.app"
+location_cache_dir="${YIOS_LOCATION_CACHE:-${project_dir}/.build-cache/location-backend-downloads}"
+app_name="YIOS-KIT.app"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${project_dir}/Info.plist")"
 build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${project_dir}/Info.plist")"
-release_stem="SE2-Recovery-Assistant-${version}-arm64"
+release_stem="YIOS-KIT-${version}-arm64"
 
 fail() {
   print -u2 -- "Release packaging failed: $*"
@@ -36,6 +37,12 @@ for record in "${source_records[@]}"; do
   [[ "$actual_sha" == "$expected_sha" ]] || fail "source archive checksum mismatch: ${archive}"
 done
 
+location_source="pymobiledevice3-10.9.0.tar.gz"
+location_source_sha="20785dcd92b4d09277ede37573f0be765a8fa77df021208ee0787138b38526b4"
+[[ -f "${location_cache_dir}/${location_source}" ]] || fail "missing pymobiledevice3 source; run build-location-backend.sh first"
+actual_location_sha="$(/usr/bin/shasum -a 256 "${location_cache_dir}/${location_source}" | /usr/bin/awk '{print $1}')"
+[[ "$actual_location_sha" == "$location_source_sha" ]] || fail "source archive checksum mismatch: ${location_source}"
+
 "${script_dir}/run-tests.sh"
 "${project_dir}/build-app.sh"
 
@@ -51,8 +58,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 stage_output="${stage_root}/output"
-source_tree="${stage_root}/SE2-Recovery-Assistant-Source-${version}"
-third_party_tree="${stage_root}/SE2-Recovery-Assistant-Third-Party-Source-${version}"
+source_tree="${stage_root}/YIOS-KIT-Source-${version}"
+third_party_tree="${stage_root}/YIOS-KIT-Third-Party-Source-${version}"
 /bin/mkdir -p "$stage_output" "$source_tree" "$third_party_tree/Archives"
 
 /usr/bin/ditto "$built_app" "${stage_root}/${app_name}"
@@ -61,21 +68,28 @@ third_party_tree="${stage_root}/SE2-Recovery-Assistant-Third-Party-Source-${vers
   "${stage_output}/${release_stem}.zip"
 /bin/cp "${project_dir}/README.md" "${stage_output}/Read Me.md"
 
-for item in .gitignore Info.plist README.md build-app.sh Scripts Sources Tests; do
+for item in .gitignore Backend Info.plist README.md build-app.sh Scripts Sources Tests; do
   /usr/bin/ditto "${project_dir}/${item}" "${source_tree}/${item}"
 done
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
   "$source_tree" \
-  "${stage_output}/SE2-Recovery-Assistant-${version}-Source.zip"
+  "${stage_output}/YIOS-KIT-${version}-Source.zip"
 
 for record in "${source_records[@]}"; do
   IFS='|' read -r archive _ <<< "$record"
   /bin/cp "${cache_dir}/${archive}" "${third_party_tree}/Archives/${archive}"
 done
+/bin/cp "${location_cache_dir}/${location_source}" "${third_party_tree}/Archives/${location_source}"
 /bin/cp "${script_dir}/ThirdPartyNotices.md" "${third_party_tree}/ThirdPartyNotices.md"
 /bin/cp "${script_dir}/build-bundled-tools.sh" "${third_party_tree}/build-bundled-tools.sh"
 /bin/cp "${script_dir}/verify-bundled-tools.sh" "${third_party_tree}/verify-bundled-tools.sh"
-/bin/chmod 0755 "${third_party_tree}/build-bundled-tools.sh" "${third_party_tree}/verify-bundled-tools.sh"
+/bin/cp "${script_dir}/build-location-backend.sh" "${third_party_tree}/build-location-backend.sh"
+/bin/cp "${script_dir}/verify-location-backend.sh" "${third_party_tree}/verify-location-backend.sh"
+/bin/chmod 0755 \
+  "${third_party_tree}/build-bundled-tools.sh" \
+  "${third_party_tree}/verify-bundled-tools.sh" \
+  "${third_party_tree}/build-location-backend.sh" \
+  "${third_party_tree}/verify-location-backend.sh"
 /bin/cp "${script_dir}/ToolchainManifest.plist" "${third_party_tree}/ToolchainManifest.plist"
 (
   cd "$third_party_tree"
@@ -85,7 +99,7 @@ done
 )
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
   "$third_party_tree" \
-  "${stage_output}/SE2-Recovery-Assistant-${version}-Third-Party-Source.zip"
+  "${stage_output}/YIOS-KIT-${version}-Third-Party-Source.zip"
 
 for archive in "${stage_output}"/*.zip; do
   /usr/bin/unzip -tq "$archive" >/dev/null || fail "archive integrity check failed: ${archive:t}"
@@ -97,14 +111,15 @@ extracted_app_root="${stage_root}/app-check"
 extracted_app="${extracted_app_root}/${app_name}"
 /usr/bin/codesign --verify --deep --strict --all-architectures "$extracted_app"
 "${script_dir}/verify-bundled-tools.sh" "${extracted_app}/Contents"
+"${script_dir}/verify-location-backend.sh" "${extracted_app}/Contents"
 "${script_dir}/verify-app-integration.sh" "$extracted_app"
 
 third_party_check="${stage_root}/third-party-check"
 /bin/mkdir -p "$third_party_check"
 /usr/bin/ditto -x -k \
-  "${stage_output}/SE2-Recovery-Assistant-${version}-Third-Party-Source.zip" \
+  "${stage_output}/YIOS-KIT-${version}-Third-Party-Source.zip" \
   "$third_party_check"
-third_party_extracted="${third_party_check}/SE2-Recovery-Assistant-Third-Party-Source-${version}"
+third_party_extracted="${third_party_check}/YIOS-KIT-Third-Party-Source-${version}"
 (
   cd "$third_party_extracted"
   /usr/bin/shasum -a 256 -c SourceArchives.sha256 >/dev/null

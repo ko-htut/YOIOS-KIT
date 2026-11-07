@@ -56,7 +56,7 @@ enum DeviceTimelineReportBuilder {
         let iso = ISO8601DateFormatter()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var lines = [
-            "SE2 Device Center — redacted USB and recovery timeline",
+            "YIOS-KIT Device Center — redacted USB and recovery timeline",
             "Exported: \(iso.string(from: Date()))",
             "",
             "Scope: this app session. Events may span a disconnect or target change and are not attributed to one current-device token.",
@@ -219,7 +219,7 @@ enum CrashReportInspector {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let baseName = "SE2-Crash-Reports-\(formatter.string(from: date))"
+        let baseName = "YIOS-Crash-Reports-\(formatter.string(from: date))"
         var destination = parent.appendingPathComponent(baseName, isDirectory: true)
         var suffix = 2
         while FileManager.default.fileExists(atPath: destination.path) {

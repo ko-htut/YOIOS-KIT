@@ -31,3 +31,22 @@ The full license texts shipped beside this notice control in case of conflict.
 The `COPYING` files included by libimobiledevice and libplist contain GPL text
 for GPL-covered source portions; their `COPYING.LESSER` files contain LGPL 2.1.
 The selected utilities and libraries are described by those projects as LGPL.
+
+## App-private Mock Location backend
+
+Mock Location runs a restricted original YIOS-KIT JSON-lines wrapper as a child
+process with an unmodified upstream Python distribution. It is separate from
+the native inspection/recovery helper suite above.
+
+| Component | Version | License | Official distribution | SHA-256 |
+|---|---:|---|---|---|
+| pymobiledevice3 wheel | 10.9.0 | GPL-3.0-or-later | https://files.pythonhosted.org/packages/02/a6/d241e52b152b971a807105c8d2f6902ee6b68800546bfcf3aa85b00949b1/pymobiledevice3-10.9.0-py3-none-any.whl | `dc1ac7e3eb3d12622f9a354b66c1368f2b7145344dd1a145ef191ef47b00bb4b` |
+| pymobiledevice3 corresponding source | 10.9.0 | GPL-3.0-or-later | https://files.pythonhosted.org/packages/6f/55/b8e0b5308133a5c1892018730bda7350cf6facbccc041c80e086efd0d365/pymobiledevice3-10.9.0.tar.gz | `20785dcd92b4d09277ede37573f0be765a8fa77df021208ee0787138b38526b4` |
+
+The complete source archive is included under
+`Contents/Resources/YIOSLocation/Source`, and the GPL text, exact resolved
+dependency inventory, distribution metadata/license files, build script,
+verification script, dependency lock, and protocol description are included
+beside it. The wrapper makes no upstream source changes. It fixes the upstream
+version, disables automatic pairing and RemotePairing fallback, and exposes
+only readiness probe, static set, and clear operations for the exact SE2 target.

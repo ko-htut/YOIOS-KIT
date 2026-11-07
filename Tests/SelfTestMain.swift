@@ -28,6 +28,7 @@ struct SelfTestMain {
         expect(DeviceDetector.parseIOReg(fixture(pid: 0x12A8, ecid: ecid)).mode == .usbUnavailable, "0x12A8 alone must not prove Normal iOS")
         expect(DeviceDetector.parseIOReg(fixture(pid: 0x1281, ecid: ecid)).mode == .recovery, "0x1281 must classify as Recovery")
         expect(DeviceDetector.parseIOReg(fixture(pid: 0x1227, ecid: ecid)).mode == .dfu, "0x1227 must classify as DFU")
+        expect(DeviceDetector.parseIOReg(fixture(pid: 0x1881, ecid: ecid)).mode == .unknown, "0x1881 KIS/Debug USB must be observed without claiming verified DFU")
         expect(DeviceDetector.parseIOReg(fixture(pid: 0x12AC, ecid: ecid)).mode == .restoreOS, "0x12AC must classify as RestoreOS")
         expect(DeviceDetector.parseIOReg(fixture(pid: 0x1299, ecid: ecid)).mode == .unknown, "unknown Apple mobile PID must stay unknown")
         expect(DeviceDetector.parseIOReg(fixture(pid: 0x1281, ecid: ecid) + fixture(pid: 0x1227, ecid: ecid + 1, location: 2_097_152)).mode == .multiple, "two iPhones must block as multiple")
@@ -35,6 +36,31 @@ struct SelfTestMain {
         expect(DeviceDetector.normalizeECID("0000") == "0", "zero ECID normalization")
         expect(DeviceDetector.normalizeECID("344808900083758") == DeviceDetector.normalizeECID("0x1399A1401402E"), "decimal and hexadecimal ECID forms must compare equally")
         expect(DeviceDetector.canonicalECIDHex("0000ABC") == "0xABC", "Factory Reset ECID must canonicalize to explicit hex")
+
+        let se2Model = SupportedDeviceCatalog.se2
+        expect(SupportedDeviceCatalog.all.count == 14, "the supported-device catalog must contain exactly the bounded 14 ProductType variants")
+        expect(Set(SupportedDeviceCatalog.all.map(\.productType)).count == 14, "supported ProductType values must be unique")
+        expect(Set(SupportedDeviceCatalog.all.map { $0.hardwareModel.lowercased() }).count == 14, "supported HardwareModel values must be unique")
+        for supported in SupportedDeviceCatalog.all {
+            let resolved = SupportedDeviceCatalog.model(
+                productType: supported.productType,
+                hardwareModel: supported.hardwareModel,
+                chipID: String(format: "0x%llX", supported.chipID),
+                boardID: String(format: "0x%llX", supported.boardID)
+            )
+            expect(resolved == supported, "the exact identity tuple for \(supported.productType) must resolve to its catalog row")
+        }
+        expect(
+            SupportedDeviceCatalog.model(
+                productType: "iPhone12,1",
+                hardwareModel: "d79ap",
+                chipID: "0x8030",
+                boardID: "0x10"
+            ) == nil,
+            "a cross-model ProductType/HardwareModel tuple must fail closed"
+        )
+        expect(SupportedDeviceCatalog.model(productType: "iPhone9,3") == nil, "iPhone 7 must remain below the supported boundary")
+        expect(SupportedDeviceCatalog.model(productType: "iPhone13,1") == nil, "iPhone 12 mini must remain above the supported boundary")
 
         let revive = AppleCommandBuilder.revive(ecid: "0xABC")
         expect(revive == ["--ecid", "0xABC", "--format", "JSON", "--progress", "-v", "revive"], "revive argv changed unexpectedly")
@@ -94,44 +120,64 @@ struct SelfTestMain {
             hardwareModel: "d79ap",
             modeVerified: true
         )
-        expect(DeviceDetector.matchesPinnedNormalTarget(pinnedNormal, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576), "exact verified Normal target must satisfy Factory Reset pin")
+        expect(DeviceDetector.matchesPinnedNormalTarget(pinnedNormal, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576, pinnedModel: se2Model), "exact verified Normal target must satisfy Factory Reset pin")
         var conflictingSE2Identity = pinnedNormal
         conflictingSE2Identity.hardwareModel = "n104ap"
         expect(!conflictingSE2Identity.isSE2, "conflicting ProductType and HardwareModel must fail SE2 identity closed")
-        expect(!DeviceDetector.matchesPinnedNormalTarget(conflictingSE2Identity, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576), "conflicting SE2 identifiers must block exact-target writes")
+        expect(!DeviceDetector.matchesPinnedNormalTarget(conflictingSE2Identity, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576, pinnedModel: se2Model), "conflicting supported-device identifiers must block exact-target writes")
         var swappedUDID = pinnedNormal
         swappedUDID.udid = "00008030-000511EA2E30C02E"
-        expect(!DeviceDetector.matchesPinnedNormalTarget(swappedUDID, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576), "changed UDID must reject Factory Reset")
+        expect(!DeviceDetector.matchesPinnedNormalTarget(swappedUDID, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576, pinnedModel: se2Model), "changed UDID must reject Factory Reset")
         var swappedLocation = pinnedNormal
         swappedLocation.locationID = 2_097_152
-        expect(!DeviceDetector.matchesPinnedNormalTarget(swappedLocation, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576), "changed USB location must reject Factory Reset")
+        expect(!DeviceDetector.matchesPinnedNormalTarget(swappedLocation, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576, pinnedModel: se2Model), "changed USB location must reject Factory Reset")
         var unverifiedNormal = pinnedNormal
         unverifiedNormal.modeVerified = false
-        expect(!DeviceDetector.matchesPinnedNormalTarget(unverifiedNormal, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576), "unverified Normal USB must reject Factory Reset")
+        expect(!DeviceDetector.matchesPinnedNormalTarget(unverifiedNormal, pinnedECID: "0x1399A1401402E", pinnedUDID: "00008030-0001399A1401402E", pinnedLocation: 1_048_576, pinnedModel: se2Model), "unverified Normal USB must reject Factory Reset")
+
+        let completeRecoveryQuery = DeviceDetector.parseRecoveryIdentityQuery("""
+        ECID: 0x1399A1401402E
+        PRODUCT: iPhone12,8
+        MODEL: d79ap
+        CPID: 0x8030
+        BDID: 0x10
+        NAME: iPhone SE (2nd generation)
+        """)
+        expect(completeRecoveryQuery.exactModel(for: "0x1399A1401402E") == se2Model, "targeted irecovery identity must require and match the requested ECID plus the complete model tuple")
+        let missingRecoveryECID = DeviceDetector.parseRecoveryIdentityQuery("PRODUCT: iPhone12,8\nMODEL: d79ap\nCPID: 0x8030\nBDID: 0x10")
+        expect(missingRecoveryECID.exactModel(for: "0x1399A1401402E") == nil, "irecovery identity without a returned ECID must fail closed")
+        let mismatchedRecoveryECID = DeviceDetector.parseRecoveryIdentityQuery("ECID: 0x511EA2E30C02E\nPRODUCT: iPhone12,8\nMODEL: d79ap\nCPID: 0x8030\nBDID: 0x10")
+        expect(mismatchedRecoveryECID.exactModel(for: "0x1399A1401402E") == nil, "irecovery identity returned for a different ECID must fail closed")
+        let unsupportedRecoveryIdentity = DeviceDetector.parseRecoveryIdentityQuery("ECID: 0x1399A1401402E\nPRODUCT: iPhone13,1\nMODEL: d52gap\nCPID: 0x8101\nBDID: 0x0A")
+        expect(unsupportedRecoveryIdentity.matches(requestedECID: "0x1399A1401402E"), "same-target unsupported ProductType evidence may be retained for model-aware guidance")
+        expect(unsupportedRecoveryIdentity.exactModel(for: "0x1399A1401402E") == nil, "unsupported ProductType evidence must never satisfy the destructive catalog")
 
         var postReset = pinnedNormal
         postReset.mode = .usbUnavailable
         postReset.modeVerified = false
         postReset.udid = nil
-        expect(DeviceDetector.matchesPostFactoryResetCandidate(postReset, pinnedECID: "0x1399A1401402E"), "same-ECID SE2 on raw Normal USB must satisfy post-reset target check")
+        expect(DeviceDetector.matchesPostFactoryResetCandidate(postReset, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "same-ECID pinned model on raw Normal USB must satisfy post-reset target check")
+        var postResetWithoutProduct = postReset
+        postResetWithoutProduct.productType = nil
+        expect(!DeviceDetector.matchesPostFactoryResetCandidate(postResetWithoutProduct, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "same ECID without fresh exact ProductType evidence must not satisfy the post-reset model check")
         var resetTracker = PostFactoryResetTracker()
-        expect(!resetTracker.observe(pinnedNormal, pinnedECID: "0x1399A1401402E"), "unchanged pre-reset Normal state must not prove Factory Reset completion")
-        expect(!resetTracker.observe(DeviceSnapshot(mode: .notDetected), pinnedECID: "0x1399A1401402E"), "target disappearance records a transition but is not a completed return")
-        expect(resetTracker.observe(postReset, pinnedECID: "0x1399A1401402E"), "same target must return after an observed transition before post-reset verification passes")
-        var wrongProductAfterReset = postReset
-        wrongProductAfterReset.productType = "iPhone12,1"
-        wrongProductAfterReset.hardwareModel = "n104ap"
-        expect(!DeviceDetector.matchesPostFactoryResetCandidate(wrongProductAfterReset, pinnedECID: "0x1399A1401402E"), "non-SE2 must fail post-reset target check")
+        expect(!resetTracker.observe(pinnedNormal, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "unchanged pre-reset Normal state must not prove Factory Reset completion")
+        expect(!resetTracker.observe(DeviceSnapshot(mode: .notDetected), pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "target disappearance records a transition but is not a completed return")
+        expect(resetTracker.observe(postReset, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "same target and model must return after an observed transition before post-reset verification passes")
+        var differentSupportedModelAfterReset = postReset
+        differentSupportedModelAfterReset.productType = "iPhone12,1"
+        differentSupportedModelAfterReset.hardwareModel = "n104ap"
+        expect(!DeviceDetector.matchesPostFactoryResetCandidate(differentSupportedModelAfterReset, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "a different supported model must fail the pinned post-reset target check")
         var recoveryAfterReset = postReset
         recoveryAfterReset.mode = .recovery
         recoveryAfterReset.usbPID = 0x1281
-        expect(!DeviceDetector.matchesPostFactoryResetCandidate(recoveryAfterReset, pinnedECID: "0x1399A1401402E"), "Recovery mode must fail post-reset Normal return check")
+        expect(!DeviceDetector.matchesPostFactoryResetCandidate(recoveryAfterReset, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "Recovery mode must fail post-reset Normal return check")
         var multipleAfterReset = postReset
         multipleAfterReset.mode = .multiple
         multipleAfterReset.deviceCount = 2
-        expect(!DeviceDetector.matchesPostFactoryResetCandidate(multipleAfterReset, pinnedECID: "0x1399A1401402E"), "multiple devices must fail post-reset target check")
+        expect(!DeviceDetector.matchesPostFactoryResetCandidate(multipleAfterReset, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "multiple devices must fail post-reset target check")
         postReset.ecid = "0x511EA2E30C02E"
-        expect(!DeviceDetector.matchesPostFactoryResetCandidate(postReset, pinnedECID: "0x1399A1401402E"), "wrong ECID must reject post-reset target check")
+        expect(!DeviceDetector.matchesPostFactoryResetCandidate(postReset, pinnedECID: "0x1399A1401402E", pinnedModel: se2Model), "wrong ECID must reject post-reset target check")
 
         let preflightJSON = "{\"Command\":\"get\",\"Output\":{\"0x1399A1401402E\":{\"isPaired\":true,\"bootedState\":\"Booted\",\"ECID\":\"0x1399A1401402E\",\"UDID\":\"00008030-0001399A1401402E\",\"activationState\":\"Activated\",\"deviceType\":\"iPhone12,8\",\"isSupervised\":false,\"passcodeProtected\":true,\"firmwareVersion\":\"17.7\",\"buildVersion\":\"21H16\"},\"Errors\":{\"0x1399A1401402E\":{}}},\"Type\":\"CommandOutput\",\"Devices\":[\"0x1399A1401402E\"]}"
         if case .success(let info) = ConfiguratorTargetProbe.parse(preflightJSON, expectedECID: "0x1399A1401402E") {
@@ -153,7 +199,8 @@ struct SelfTestMain {
         let factoryPin = FactoryResetPin(
             ecid: "0x1399A1401402E",
             udid: "00008030-0001399A1401402E",
-            locationID: 1_048_576
+            locationID: 1_048_576,
+            model: se2Model
         )
         let validPairing = PairingValidation(isValid: true, detail: "SUCCESS")
         let validFactoryInfo = ConfiguratorTargetInfo(
@@ -224,10 +271,10 @@ struct SelfTestMain {
             let url = URL(fileURLWithPath: CommandLine.arguments[1])
             switch IPSWValidator.inspect(url) {
             case .success(let info):
-                expect(info.compatibleWithSE2, "selected IPSW must contain iPhone12,8/d79ap")
+                expect(info.isCompatible(with: se2Model), "selected IPSW must contain the exact iPhone12,8/d79ap model")
                 expect(info.productVersion != "Unknown", "IPSW must expose ProductVersion")
                 expect(info.buildVersion != "Unknown", "IPSW must expose ProductBuildVersion")
-                print("IPSW: \(info.title), SE2-compatible=\(info.compatibleWithSE2)")
+                print("IPSW: \(info.title), target-compatible=\(info.isCompatible(with: se2Model))")
             case .failure(let error):
                 failures.append("IPSW validation failed: \(error.localizedDescription)")
             }

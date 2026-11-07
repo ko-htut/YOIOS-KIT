@@ -47,13 +47,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model?.isMonitoring == true ||
                 model?.destructiveWorkflowActive == true ||
                 model?.postResetReviewRequired == true ||
-                model?.crashCopyReviewRequired == true else {
+                model?.crashCopyReviewRequired == true ||
+                model?.mockLocationController.blocksDeviceMutation == true else {
             return .terminateNow
         }
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "iPhone operation is still active"
-        alert.informativeText = "Do not quit, close the window, disconnect the cable, or let the Mac sleep while USB monitoring, target verification, Factory Reset, Apple recovery, post-reset Hello-screen review, or crash-copy manual review is active."
+        let locationSafetyRecordOnly = model?.mockLocationController.blocksDeviceMutation == true &&
+            model?.operationRunning != true &&
+            model?.isMonitoring != true &&
+            model?.destructiveWorkflowActive != true &&
+            model?.postResetReviewRequired != true &&
+            model?.crashCopyReviewRequired != true
+        let unavailableRecordedIPhone = locationSafetyRecordOnly &&
+            model?.mockLocationController.shouldOfferForgetUnavailableRecord == true
+        let persistentLocationOnly = model?.mockLocationController.isAssumedPersistent == true &&
+            locationSafetyRecordOnly
+        if unavailableRecordedIPhone {
+            alert.messageText = "Mock Location safety record still locks this Mac"
+            alert.informativeText = "The saved record belongs to a different iPhone. If the recorded iPhone is permanently unavailable, open Mock Location and choose Forget Unavailable iPhone Record. That explicit action deletes only YIOS-KIT's local record and unlocks this Mac; it sends no command and cannot reset or verify the recorded iPhone's location."
+        } else if persistentLocationOnly {
+            alert.messageText = "iPhone operation is still active"
+            alert.informativeText = "Experimental persistent location is assumed active. Cable disconnect is allowed for this mode, but quit and window close remain blocked so the durable reset obligation cannot be hidden. Reconnect the same stable iPhone and choose Return to Real Location; rebooting is expected to restore phone-side GPS but does not clear the app safety record."
+        } else {
+            alert.messageText = "iPhone operation is still active"
+            alert.informativeText = "Do not quit, close the window, disconnect the cable, or let the Mac sleep while USB monitoring, target verification, Factory Reset, Apple recovery, live-session Mock Location, post-reset Hello-screen review, or crash-copy manual review is active. Return to Real Location before quitting when simulation may be active."
+        }
         alert.addButton(withTitle: "Keep Running")
         alert.runModal()
         return .terminateCancel
@@ -93,9 +112,13 @@ struct SE2RecoveryAssistantApp: App {
                         model.$destructiveWorkflowActive,
                         model.$postResetReviewRequired
                     ).combineLatest(model.$crashCopyReviewRequired)
+                        .combineLatest(model.mockLocationController.$blocksDeviceMutation)
                 ) { state in
-                    let active = state.0
-                    appDelegate.setWindowClosingEnabled(!(active.0 || active.1 || active.2 || active.3 || state.1))
+                    let existing = state.0
+                    let active = existing.0
+                    appDelegate.setWindowClosingEnabled(!(
+                        active.0 || active.1 || active.2 || active.3 || existing.1 || state.1
+                    ))
                 }
         }
         .defaultSize(width: 1420, height: 880)

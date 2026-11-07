@@ -22,6 +22,19 @@ struct FactoryResetPin: Equatable {
     let ecid: String
     let udid: String
     let locationID: Int
+    let model: SupportedDeviceModel?
+
+    init(
+        ecid: String,
+        udid: String,
+        locationID: Int,
+        model: SupportedDeviceModel? = nil
+    ) {
+        self.ecid = ecid
+        self.udid = udid
+        self.locationID = locationID
+        self.model = model
+    }
 }
 
 enum FactoryResetSafety {
@@ -35,16 +48,18 @@ enum FactoryResetSafety {
             detected,
             pinnedECID: pin.ecid,
             pinnedUDID: pin.udid,
-            pinnedLocation: pin.locationID
+            pinnedLocation: pin.locationID,
+            pinnedModel: pin.model
         ) else {
-            return "The same verified Normal-mode SE2 was not found at the original USB port."
+            return "The same verified supported iPhone was not found at the original USB port."
         }
         guard pairing.isValid else {
             return "Pairing/Trust validation failed. Unlock the iPhone, tap Trust, enter its passcode, and scan again. \(pairing.detail)"
         }
-        guard DeviceDetector.normalizeECID(info.ecid) == DeviceDetector.normalizeECID(pin.ecid),
+        guard let pinnedModel = pin.model,
+              DeviceDetector.normalizeECID(info.ecid) == DeviceDetector.normalizeECID(pin.ecid),
               info.udid?.caseInsensitiveCompare(pin.udid) == .orderedSame,
-              info.deviceType == "iPhone12,8" else {
+              info.deviceType?.caseInsensitiveCompare(pinnedModel.productType) == .orderedSame else {
             return "Apple Configurator returned a different device identity."
         }
         guard info.bootedState?.caseInsensitiveCompare("Booted") == .orderedSame else {

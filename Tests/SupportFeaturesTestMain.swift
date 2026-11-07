@@ -52,7 +52,7 @@ struct SupportFeaturesTestMain {
     private static func testPrivateDestinationAndSummary() {
         let fileManager = FileManager.default
         let parent = fileManager.temporaryDirectory
-            .appendingPathComponent("SE2-Support-Test-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("YIOS-KIT-Support-Test-\(UUID().uuidString)", isDirectory: true)
         do {
             try fileManager.createDirectory(
                 at: parent,
@@ -120,8 +120,8 @@ struct SupportFeaturesTestMain {
     }
 
     private static func testTimelineExportRedaction() {
-        let ecid = "0x1C38A00A79802E"
-        let udid = "00008030-001C38A00A79802E"
+        let ecid = "0x123456789ABCDE"
+        let udid = "00008030-00123456789ABCDE"
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let device = DeviceSnapshot(
             mode: .recovery,
@@ -130,9 +130,12 @@ struct SupportFeaturesTestMain {
             locationID: 1_048_576,
             ecid: ecid,
             udid: udid,
-            productType: "iPhone12,8",
-            hardwareModel: "d79ap",
-            modeVerified: true
+            productType: "iPhone10,1",
+            hardwareModel: "d20ap",
+            modeVerified: true,
+            chipID: "0x8015",
+            boardID: "0x02",
+            recoveryIdentityQueryVerified: true
         )
         let snapshot = DeviceCenterCollector.baseline(
             for: device,

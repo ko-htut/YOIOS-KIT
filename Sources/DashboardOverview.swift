@@ -5,6 +5,7 @@ import SwiftUI
 struct DashboardOverviewView: View {
     @ObservedObject var model: RecoveryModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var revealsSensitiveValues = false
     @State private var revealGeneration = UUID()
 
@@ -18,12 +19,19 @@ struct DashboardOverviewView: View {
     private var details: DeviceCenterSnapshot { model.displayedDeviceCenterSnapshot }
 
     var body: some View {
-        ScrollView {
-            ViewThatFits(in: .horizontal) {
-                wideDashboard
-                compactDashboard
+        GeometryReader { geometry in
+            ScrollView {
+                Group {
+                    if geometry.size.width >= 1_040 {
+                        wideDashboard
+                    } else {
+                        compactDashboard
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(18)
             }
-            .padding(18)
+            .scrollIndicators(.hidden)
         }
         .background(dashboardBackground)
         .accessibilityIdentifier("deviceCenterOverview")
@@ -165,6 +173,12 @@ struct DashboardOverviewView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(heroAccent.opacity(0.25), lineWidth: 1)
         )
+        .shadow(
+            color: Color.black.opacity(colorScheme == .dark ? 0.18 : 0.06),
+            radius: 12,
+            x: 0,
+            y: 4
+        )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("deviceCenterDetailStatus")
     }
@@ -301,7 +315,7 @@ struct DashboardOverviewView: View {
 
     private var deviceUtilityToolbar: some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 108, maximum: 180), spacing: 8)],
+            columns: [GridItem(.adaptive(minimum: 136, maximum: 210), spacing: 8)],
             alignment: .leading,
             spacing: 8
         ) {
@@ -341,13 +355,13 @@ struct DashboardOverviewView: View {
 
         Button("Restart…") { model.restartIPhone() }
             .disabled(!model.canUseNormalDeviceUtilities)
-            .help("Verified Normal SE2 only; exact target is checked again before the command")
+            .help("Verified supported iPhone in Normal iOS only; the exact model and target are checked again")
             .accessibilityIdentifier("restartIPhoneButton")
 
         Button("Shut Down…") { model.shutDownIPhone() }
             .tint(.red)
             .disabled(!model.canUseNormalDeviceUtilities)
-            .help("Powers off the exact verified Normal-mode SE2 after confirmation")
+            .help("Powers off the exact verified supported iPhone after confirmation")
             .accessibilityIdentifier("shutDownIPhoneButton")
 
     }
@@ -587,11 +601,10 @@ struct DashboardOverviewView: View {
 
     private var modelName: String {
         if let marketing = details.fact("marketingName")?.value { return marketing }
-        switch details.fact("productType")?.value {
-        case "iPhone12,8": return "iPhone SE (2nd generation)"
-        case let value?: return value
-        case nil: return model.snapshot.deviceCount == 0 ? "No iPhone" : "iPhone not identified"
+        guard let value = details.fact("productType")?.value else {
+            return model.snapshot.deviceCount == 0 ? "No iPhone" : "iPhone not identified"
         }
+        return SupportedDeviceCatalog.marketingName(for: value) ?? value
     }
 
     private var primaryActionSubtitle: String {
@@ -699,29 +712,27 @@ struct DashboardOverviewView: View {
 
     private var lastUpdatedClock: String {
         guard details.capturedAt.timeIntervalSince1970 > 0 else { return "—" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: details.capturedAt)
+        return Self.observedTimeFormatter.string(from: details.capturedAt)
     }
 
     private var batterySymbol: String {
-        if details.isCharging == true { return "battery.100percent.bolt" }
-        guard let percent = details.batteryPercent else { return "battery.0percent" }
-        if percent >= 75 { return "battery.100percent" }
-        if percent >= 40 { return "battery.50percent" }
-        return "battery.25percent"
+        if details.isCharging == true { return "battery.100.bolt" }
+        guard let percent = details.batteryPercent else { return "battery.0" }
+        if percent >= 75 { return "battery.100" }
+        if percent >= 40 { return "battery.50" }
+        return "battery.25"
     }
 
     private var dashboardBackground: some View {
-        LinearGradient(
-            colors: [
-                Color(nsColor: .windowBackgroundColor),
-                Color.blue.opacity(colorScheme == .dark ? 0.025 : 0.018)
-            ],
-            startPoint: .top,
-            endPoint: .bottomTrailing
-        )
+        YIOSWorkspaceBackdrop(accent: heroAccent)
     }
+
+    private static let observedTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 
     private func requestReveal() {
         let alert = NSAlert()
@@ -799,7 +810,7 @@ struct DashboardSettingsView: View {
                     }
 
                     DashboardPanel(title: "Appearance & privacy", systemImage: "hand.raised", accent: .purple) {
-                        Text("Use the appearance control in the header to cycle System, Light, and Dark modes for this session.")
+                        Text("Use the appearance control in the header to cycle System, Light, and Dark modes. The preference is saved locally for the next launch.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -812,6 +823,8 @@ struct DashboardSettingsView: View {
             }
             .padding(20)
         }
+        .scrollIndicators(.hidden)
+        .background(YIOSWorkspaceBackdrop(accent: .blue))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settingsWorkspace")
     }
@@ -928,26 +941,20 @@ private struct DashboardPanel<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .foregroundStyle(accent ?? Color.primary)
+            YIOSPanelHeader(title, systemImage: systemImage, accent: accent)
             content
         }
         .padding(15)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke((accent ?? Color(nsColor: .separatorColor)).opacity(accent == nil ? 0.42 : 0.26), lineWidth: 1)
-        )
+        .yiosCardSurface(accent: accent, cornerRadius: 13)
     }
 }
 
 private struct DashboardActionTile: View {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
     let title: String
     let subtitle: String
@@ -958,10 +965,23 @@ private struct DashboardActionTile: View {
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 23, weight: .medium))
-                    .foregroundStyle(isEnabled ? accent : Color.secondary)
-                    .frame(height: 25)
+                HStack(alignment: .top) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill((isEnabled ? accent : Color.secondary).opacity(colorScheme == .dark ? 0.18 : 0.10))
+                        Image(systemName: systemImage)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isEnabled ? accent : Color.secondary)
+                    }
+                    .frame(width: 36, height: 36)
+
+                    Spacer(minLength: 6)
+
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isEnabled ? accent : Color.secondary)
+                        .offset(x: isHovered && isEnabled && !reduceMotion ? 2 : 0, y: isHovered && isEnabled && !reduceMotion ? -2 : 0)
+                }
                 Text(title)
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
@@ -970,25 +990,22 @@ private struct DashboardActionTile: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                HStack {
-                    Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isEnabled ? accent : Color.secondary)
-                }
             }
             .padding(12)
             .frame(maxWidth: .infinity, minHeight: 126, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill((isEnabled ? accent : Color.secondary).opacity(0.045))
+            .yiosCardSurface(
+                accent: isEnabled ? accent : .secondary,
+                cornerRadius: 13,
+                elevated: isHovered && isEnabled
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke((isEnabled ? accent : Color.secondary).opacity(0.24), lineWidth: 1)
-            )
+            .scaleEffect(isHovered && isEnabled && !reduceMotion ? 1.006 : 1)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(YIOSPressButtonStyle())
+        .onHover { hovering in
+            withAnimation(YIOSMotion.quick(reduceMotion: reduceMotion)) {
+                isHovered = hovering
+            }
+        }
     }
 }
 
@@ -1000,9 +1017,14 @@ private struct DashboardReadinessTile: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: isReady ? systemImage : "exclamationmark.circle")
-                .foregroundStyle(isReady ? Color.green : Color.orange)
-                .frame(width: 18)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill((isReady ? Color.green : Color.orange).opacity(0.10))
+                Image(systemName: isReady ? systemImage : "exclamationmark.circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isReady ? Color.green : Color.orange)
+            }
+                .frame(width: 25, height: 25)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -1016,14 +1038,7 @@ private struct DashboardReadinessTile: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 66, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-        )
+        .yiosCardSurface(cornerRadius: 11, elevated: false)
         .accessibilityElement(children: .combine)
     }
 }
@@ -1048,9 +1063,13 @@ private func evidenceSymbol(_ status: DeviceFactStatus) -> String {
 }
 
 private func dashboardFormatBytes(_ bytes: Int64) -> String {
+    dashboardByteFormatter.string(fromByteCount: bytes)
+}
+
+private let dashboardByteFormatter: ByteCountFormatter = {
     let formatter = ByteCountFormatter()
     formatter.countStyle = .decimal
     formatter.allowedUnits = [.useGB, .useMB]
     formatter.isAdaptive = true
-    return formatter.string(fromByteCount: bytes)
-}
+    return formatter
+}()

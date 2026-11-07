@@ -11,11 +11,12 @@ struct DeviceCenterOverviewView: View {
     private var details: DeviceCenterSnapshot { model.displayedDeviceCenterSnapshot }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                detailStatusStrip
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    detailStatusStrip
 
-                ViewThatFits(in: .horizontal) {
+                    if geometry.size.width >= 980 {
                     HStack(alignment: .top, spacing: 14) {
                         deviceHero
                             .frame(width: 220)
@@ -32,7 +33,7 @@ struct DeviceCenterOverviewView: View {
                         }
                         .frame(width: 300)
                     }
-
+                    } else {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .top, spacing: 14) {
                             deviceHero.frame(width: 220)
@@ -52,10 +53,15 @@ struct DeviceCenterOverviewView: View {
                         }
                     }
                 }
+                }
+                .frame(maxWidth: 1_260, alignment: .topLeading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
+        .background(YIOSWorkspaceBackdrop(accent: .blue))
         .accessibilityIdentifier("deviceCenterOverview")
         .onChange(of: model.snapshot.ecid) { _ in
             revealsSensitiveValues = false
@@ -213,7 +219,7 @@ struct DeviceCenterOverviewView: View {
                             Label("Restart…", systemImage: "arrow.clockwise.circle")
                         }
                         .disabled(!model.canUseNormalDeviceUtilities)
-                        .help("Verified Normal SE2 only; exact target is checked again before the command")
+            .help("Verified supported iPhone in Normal iOS only; the exact model and target are checked again")
                         .accessibilityIdentifier("restartIPhoneButton")
 
                         Button {
@@ -223,7 +229,7 @@ struct DeviceCenterOverviewView: View {
                         }
                         .tint(.red)
                         .disabled(!model.canUseNormalDeviceUtilities)
-                        .help("Powers off the exact verified Normal-mode SE2 after confirmation")
+            .help("Powers off the exact verified supported iPhone after confirmation")
                         .accessibilityIdentifier("shutDownIPhoneButton")
                     }
                 }
@@ -338,7 +344,7 @@ struct DeviceCenterOverviewView: View {
                     if index < facts.count - 1 { Divider() }
                 }
             }
-            Text("Connection evidence only — not a motherboard, camera, display, Touch ID, or parts-authenticity diagnostic.")
+            Text("Connection evidence only — not a motherboard, camera, display, Face ID/Touch ID, or parts-authenticity diagnostic.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -347,11 +353,10 @@ struct DeviceCenterOverviewView: View {
     }
 
     private var modelName: String {
-        switch details.fact("productType")?.value {
-        case "iPhone12,8": return "iPhone SE (2nd generation)"
-        case let value?: return value
-        case nil: return "iPhone not identified"
+        guard let value = details.fact("productType")?.value else {
+            return "iPhone not identified"
         }
+        return SupportedDeviceCatalog.marketingName(for: value) ?? value
     }
 
     private var lastUpdatedText: String {
@@ -387,11 +392,11 @@ struct DeviceCenterOverviewView: View {
     }
 
     private var batterySymbol: String {
-        if details.isCharging == true { return "battery.100percent.bolt" }
-        guard let percent = details.batteryPercent else { return "battery.0percent" }
-        if percent >= 75 { return "battery.100percent" }
-        if percent >= 40 { return "battery.50percent" }
-        return "battery.25percent"
+        if details.isCharging == true { return "battery.100.bolt" }
+        guard let percent = details.batteryPercent else { return "battery.0" }
+        if percent >= 75 { return "battery.100" }
+        if percent >= 40 { return "battery.50" }
+        return "battery.25"
     }
 
     private func unavailableText(for groups: [DeviceFactGroup]) -> String {
@@ -474,104 +479,160 @@ struct DeviceEvidenceView: View {
                     }
                 }
             }
+            .frame(maxWidth: 1_100, alignment: .topLeading)
             .padding(20)
         }
+        .scrollIndicators(.hidden)
+        .background(YIOSWorkspaceBackdrop(accent: .blue))
         .accessibilityIdentifier("deviceEvidenceView")
     }
 }
 
+enum DeviceActivityFocus: String {
+    case history
+    case tools
+    case logs
+    case crashReview = "crash-review"
+}
+
 struct DeviceActivityView: View {
     @ObservedObject var model: RecoveryModel
+    let focus: DeviceActivityFocus
 
     private var details: DeviceCenterSnapshot { model.displayedDeviceCenterSnapshot }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                DCPanel(title: "Current operation state", systemImage: "waveform.path.ecg") {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: model.crashCopyReviewRequired ? "exclamationmark.octagon.fill" : (model.operationRunning ? "arrow.triangle.2.circlepath" : "checkmark.circle"))
-                            .foregroundStyle(model.crashCopyReviewRequired ? Color.red : (model.operationRunning ? Color.blue : Color.secondary))
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(model.statusText)
-                                .font(.headline)
-                            if model.crashCopyReviewRequired {
-                                Text("Manual review lock is active")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.red)
-                            }
-                            Text(model.detailText)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                            if model.operationRunning {
-                                if let progress = model.progress {
-                                    ProgressView(value: progress)
-                                } else {
-                                    ProgressView()
-                                }
-                                Text(model.operationStep)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
+                focusedSections
+            }
+            .frame(maxWidth: 1_100, alignment: .topLeading)
+            .padding(20)
+        }
+        .scrollIndicators(.hidden)
+        .background(YIOSWorkspaceBackdrop(accent: model.crashCopyReviewRequired ? .red : .blue))
+        .accessibilityIdentifier("deviceActivityView")
+        .accessibilityValue(focus.rawValue)
+    }
 
-                backupCenter
-                crashReportCenter
-                timelineCenter
+    @ViewBuilder
+    private var focusedSections: some View {
+        switch focus {
+        case .history:
+            currentOperationPanel
+            timelineCenter
+            diagnosticLogPanel
+            lastErrorPanel
+            backupCenter
+            crashReportCenter
+        case .tools:
+            currentOperationPanel
+            backupCenter
+            crashReportCenter
+            timelineCenter
+            diagnosticLogPanel
+            lastErrorPanel
+        case .logs:
+            currentOperationPanel
+            lastErrorPanel
+            diagnosticLogPanel
+            timelineCenter
+            backupCenter
+            crashReportCenter
+        case .crashReview:
+            crashReportCenter
+            currentOperationPanel
+            lastErrorPanel
+            diagnosticLogPanel
+            backupCenter
+            timelineCenter
+        }
+    }
 
-                if let error = model.lastError {
-                    DCPanel(title: "Exact last error", systemImage: "exclamationmark.triangle.fill", accent: .red) {
-                        Text(error)
-                            .font(.system(.callout, design: .monospaced))
+    private var currentOperationPanel: some View {
+        DCPanel(title: "Current operation state", systemImage: "waveform.path.ecg") {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: model.crashCopyReviewRequired ? "exclamationmark.octagon.fill" : (model.operationRunning ? "arrow.triangle.2.circlepath" : "checkmark.circle"))
+                    .foregroundStyle(model.crashCopyReviewRequired ? Color.red : (model.operationRunning ? Color.blue : Color.secondary))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.statusText)
+                        .font(.headline)
+                    if model.crashCopyReviewRequired {
+                        Text("Manual review lock is active")
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Button("Copy error") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(error, forType: .string)
-                        }
-                        .accessibilityIdentifier("copyLastErrorButton")
                     }
-                }
-
-                DCPanel(title: "Diagnostic activity log", systemImage: "doc.text.magnifyingglass") {
-                    Text("This is the assistant's redacted recovery log—not the iPhone's private crash reports or syslog.")
-                        .font(.caption)
+                    Text(model.detailText)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            Text(model.logText.isEmpty ? "No log entries yet." : model.logText)
-                                .font(.system(size: 11, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
-                                .id("activity-log-end")
+                    if model.operationRunning {
+                        if let progress = model.progress {
+                            ProgressView(value: progress)
+                        } else {
+                            ProgressView()
                         }
-                        .padding(10)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
-                        )
-                        .onReceive(model.$logText) { _ in
-                            proxy.scrollTo("activity-log-end", anchor: .bottom)
-                        }
-                    }
-                    HStack {
-                        Button("Save log…") { model.saveLog() }
-                            .accessibilityIdentifier("activitySaveLogButton")
-                        Button("Export device report…") { model.saveDeviceReport() }
-                            .disabled(model.displayedDeviceCenterSnapshot.facts.isEmpty)
-                            .accessibilityIdentifier("activityExportReportButton")
+                        Text(model.operationStep)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding(20)
         }
-        .accessibilityIdentifier("deviceActivityView")
+        .accessibilityIdentifier("currentOperationPanel")
+    }
+
+    @ViewBuilder
+    private var lastErrorPanel: some View {
+        if let error = model.lastError {
+            DCPanel(title: "Exact last error", systemImage: "exclamationmark.triangle.fill", accent: .red) {
+                Text(error)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Copy error") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(error, forType: .string)
+                }
+                .accessibilityIdentifier("copyLastErrorButton")
+            }
+        }
+    }
+
+    private var diagnosticLogPanel: some View {
+        DCPanel(title: "Diagnostic activity log", systemImage: "doc.text.magnifyingglass") {
+            Text("This is the assistant's redacted recovery log—not the iPhone's private crash reports or syslog.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(model.logText.isEmpty ? "No log entries yet." : model.logText)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
+                        .id("activity-log-end")
+                }
+                .padding(10)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+                )
+                .onReceive(model.$logText) { _ in
+                    proxy.scrollTo("activity-log-end", anchor: .bottom)
+                }
+            }
+            HStack {
+                Button("Save log…") { model.saveLog() }
+                    .accessibilityIdentifier("activitySaveLogButton")
+                Button("Export device report…") { model.saveDeviceReport() }
+                    .disabled(model.displayedDeviceCenterSnapshot.facts.isEmpty)
+                    .accessibilityIdentifier("activityExportReportButton")
+            }
+        }
+        .accessibilityIdentifier("diagnosticLogPanel")
     }
 
     private var backupCenter: some View {
@@ -609,7 +670,7 @@ struct DeviceActivityView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if !model.canOpenFinderBackup {
-                    Label("Requires exactly one verified SE2 in Normal iOS and no active scan, monitor, recovery, reset review, or device operation.", systemImage: "lock")
+                    Label("Requires exactly one verified supported iPhone in Normal iOS and no active scan, monitor, recovery, reset review, or device operation.", systemImage: "lock")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -646,7 +707,7 @@ struct DeviceActivityView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if !model.canCopyCrashReports {
-                    Label("Requires one unlocked/trusted, protocol-verified SE2 in Normal iOS, the keep-capable crash-report tool, and no competing iPhone operation.", systemImage: "lock")
+                    Label("Requires one unlocked/trusted, protocol-verified supported iPhone in Normal iOS, the keep-capable crash-report tool, and no competing iPhone operation.", systemImage: "lock")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -657,6 +718,8 @@ struct DeviceActivityView: View {
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                crashReportActions
 
                 if let summary = model.crashReportSummary {
                     Divider()
@@ -675,7 +738,7 @@ struct DeviceActivityView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(summary.privacySecured ? Color.green : Color.red)
                     Label(
-                        summary.targetVerifiedAfterCopy ? "Same trusted SE2 re-verified after copy" : "Post-copy target/Trust was not fully re-verified",
+                        summary.targetVerifiedAfterCopy ? "Same trusted supported iPhone re-verified after copy" : "Post-copy target/Trust was not fully re-verified",
                         systemImage: summary.targetVerifiedAfterCopy ? "checkmark.shield.fill" : "person.crop.circle.badge.questionmark"
                     )
                     .font(.caption.weight(.semibold))
@@ -687,39 +750,36 @@ struct DeviceActivityView: View {
                     }
                 }
 
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        Button("Copy from iPhone…") { model.copyCrashReports() }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!model.canCopyCrashReports)
-                            .accessibilityIdentifier("copyCrashReportsButton")
-                        if model.crashReportSummary != nil {
-                            Button("Open copied folder") { model.openCopiedCrashReports() }
-                                .accessibilityIdentifier("openCrashReportFolderButton")
-                        }
-                        if model.crashCopyReviewRequired {
-                            Button("I reviewed them — Clear Lock…") { model.clearCrashCopyReview() }
-                                .accessibilityIdentifier("clearCrashReviewButton")
-                        }
-                    }
-                    VStack(alignment: .leading) {
-                        Button("Copy from iPhone…") { model.copyCrashReports() }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!model.canCopyCrashReports)
-                            .accessibilityIdentifier("copyCrashReportsButton")
-                        if model.crashReportSummary != nil {
-                            Button("Open copied folder") { model.openCopiedCrashReports() }
-                                .accessibilityIdentifier("openCrashReportFolderButton")
-                        }
-                        if model.crashCopyReviewRequired {
-                            Button("I reviewed them — Clear Lock…") { model.clearCrashCopyReview() }
-                                .accessibilityIdentifier("clearCrashReviewButton")
-                        }
-                    }
-                }
             }
         }
         .accessibilityIdentifier("crashReportCenterPanel")
+    }
+
+    private var crashReportActions: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                crashReportActionButtons
+            }
+            VStack(alignment: .leading) {
+                crashReportActionButtons
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var crashReportActionButtons: some View {
+        if model.crashCopyReviewRequired {
+            Button("I reviewed them — Clear Lock…") { model.clearCrashCopyReview() }
+                .accessibilityIdentifier("clearCrashReviewButton")
+        }
+        if model.crashReportSummary != nil {
+            Button("Open copied folder") { model.openCopiedCrashReports() }
+                .accessibilityIdentifier("openCrashReportFolderButton")
+        }
+        Button("Copy from iPhone…") { model.copyCrashReports() }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canCopyCrashReports)
+            .accessibilityIdentifier("copyCrashReportsButton")
     }
 
     private var timelineCenter: some View {
@@ -901,21 +961,12 @@ private struct DCPanel<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .foregroundStyle(accent ?? Color.primary)
+            YIOSPanelHeader(title, systemImage: systemImage, accent: accent)
             content
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke((accent ?? Color(nsColor: .separatorColor)).opacity(accent == nil ? 0.45 : 0.30), lineWidth: 1)
-        )
+        .yiosCardSurface(accent: accent, cornerRadius: 12)
     }
 }
 
@@ -962,7 +1013,7 @@ private func groupSymbol(_ group: DeviceFactGroup) -> String {
     case .identity: return "person.text.rectangle"
     case .software: return "gearshape.2"
     case .cellular: return "antenna.radiowaves.left.and.right"
-    case .battery: return "battery.50percent"
+    case .battery: return "battery.50"
     case .storage: return "internaldrive"
     case .security: return "lock.shield"
     case .tooling: return "wrench.and.screwdriver"

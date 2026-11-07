@@ -159,7 +159,7 @@ enum DeviceCenterReportBuilder {
     static func redactedText(for snapshot: DeviceCenterSnapshot) -> String {
         let formatter = ISO8601DateFormatter()
         var lines = [
-            "SE2 Device Center — redacted support report",
+            "YIOS-KIT Device Center — redacted support report",
             "Captured: \(formatter.string(from: snapshot.capturedAt))",
             "Target token: \(DeviceCenterPrivacy.reportToken(ecid: snapshot.targetECID, capturedAt: snapshot.capturedAt))",
             "Mode: \(snapshot.mode.title)",
@@ -605,7 +605,7 @@ enum DeviceCenterCollector {
             protocolSource,
             "Write actions require protocol verification, not only a USB product ID."
         ))
-        if let value = device.productType { facts.upsert(fact("productType", .identity, "Product type", value, device.isSE2 ? .verified : .reported, "Apple device service", "Apple hardware product identifier.")) }
+        if let value = device.productType { facts.upsert(fact("productType", .identity, "Product type", value, device.supportedDeviceModel != nil ? .verified : .reported, "Apple device service", "Apple hardware product identifier.")) }
         if let value = device.hardwareModel { facts.upsert(fact("hardwareModel", .identity, "Hardware model", value, .reported, "Apple device service", "Board configuration identifier; not proof of original parts.")) }
         if let value = device.deviceName { facts.upsert(fact("deviceName", .identity, "Device name", value, .reported, "Apple device service", "User-assigned device name.", .personal)) }
         if let value = device.marketingName { facts.upsert(fact("marketingName", .identity, "Model name", value, .reported, "libirecovery", "Hardware marketing name returned in Recovery/DFU; not a user-assigned device name.")) }
@@ -622,27 +622,36 @@ enum DeviceCenterCollector {
         if let speed = device.usbLinkSpeed, speed > 0 { facts.upsert(fact("usbLink", .connection, "USB link", formatLinkSpeed(speed), .reported, "IORegistry", "Negotiated USB link speed, not transfer throughput.")) }
         if let allocation = device.usbPowerSinkAllocation { facts.upsert(fact("usbPowerAllocation", .connection, "USB power allocation (raw)", String(allocation), .reported, "IORegistry", "Raw capability/allocation value; not measured charging current or watts.")) }
 
-        let productMatches = device.productType == "iPhone12,8"
-        let hardwareMatches = device.hardwareModel?.lowercased() == "d79ap"
+        let supportedModel = device.supportedDeviceModel
+        let productMatches = supportedModel?.productType.caseInsensitiveCompare(device.productType ?? "") == .orderedSame
+        let hardwareMatches = supportedModel?.hardwareModel.caseInsensitiveCompare(device.hardwareModel ?? "") == .orderedSame
         let identityValue: String
         let identitySource: String
-        if productMatches && hardwareMatches {
-            identityValue = "iPhone12,8 + d79ap agree"
-            identitySource = "Product type + hardware model"
-        } else if productMatches {
-            identityValue = "iPhone12,8 reported; hardware model not confirmed"
+        if let supportedModel, productMatches && hardwareMatches {
+            let tuple = device.mode == .recovery || device.mode == .dfu
+                ? " • CPID/BDID \(device.recoveryIdentityQueryVerified ? "verified" : "not fully verified")"
+                : ""
+            identityValue = "\(supportedModel.productType) + \(supportedModel.hardwareModel) agree\(tuple)"
+            identitySource = device.mode == .recovery || device.mode == .dfu
+                ? "Targeted libirecovery identity query"
+                : "Product type + hardware model"
+        } else if let supportedModel, productMatches {
+            identityValue = "\(supportedModel.productType) reported; hardware model not confirmed"
             identitySource = "Apple product identifier"
-        } else if hardwareMatches {
-            identityValue = "d79ap reported; product type not confirmed"
+        } else if let supportedModel, hardwareMatches {
+            identityValue = "\(supportedModel.hardwareModel) reported; product type not confirmed"
             identitySource = "Apple hardware-model identifier"
+        } else if device.identityConflict {
+            identityValue = "Conflicting identity evidence — writes blocked"
+            identitySource = "Cross-source identity check"
         } else {
             identityValue = "Not confirmed"
             identitySource = "Available identity evidence"
         }
         facts.upsert(fact(
-            "se2Identity", .connection, "SE2 identity",
+            "supportedIdentity", .connection, "Supported recovery identity",
             identityValue,
-            productMatches && hardwareMatches ? .verified : (device.isSE2 ? .reported : .warning),
+            device.hasVerifiedSupportedDeviceIdentity ? .verified : (supportedModel != nil ? .reported : .warning),
             identitySource,
             "Identity verification does not test individual components. Conflicting identifiers fail closed."
         ))
@@ -727,8 +736,8 @@ enum DeviceCenterCollector {
     private static func addLimitationFacts(to facts: inout DeviceFactAccumulator) {
         facts.upsert(fact("findMy", .limitations, "Find My / Activation Lock", "Not verified by this app", .warning, "App limitation", "ActivationState does not prove Find My or Activation Lock is off."))
         facts.upsert(fact("warranty", .limitations, "Warranty / AppleCare", "Unknown — check with Apple", .unavailable, "App limitation", "The app does not send the serial number to a third-party lookup or infer coverage from manufacturing data."))
-        facts.upsert(fact("partsHistory", .limitations, "Parts & service history", "Check Settings > General > About", .unavailable, "On-device Apple interface", "For SE2, Apple exposes supported parts history on the iPhone; this Mac app does not infer original parts."))
-        facts.upsert(fact("componentHealth", .limitations, "Motherboard, display, cameras, Touch ID", "Not hardware-tested", .unavailable, "App limitation", "USB communication cannot prove that these components are healthy or original."))
+        facts.upsert(fact("partsHistory", .limitations, "Parts & service history", "Check Settings > General > About", .unavailable, "On-device Apple interface", "Availability varies by model and iOS. This Mac app does not infer original parts or repair history."))
+        facts.upsert(fact("componentHealth", .limitations, "Motherboard, display, cameras, Face ID/Touch ID", "Not hardware-tested", .unavailable, "App limitation", "USB communication cannot prove that these components are healthy or original."))
         facts.upsert(fact("batteryHealth", .limitations, "Battery Health / cycle count", "Not available from the supported read-only fields", .unavailable, "App limitation", "Current charge may be shown when reported; the app does not invent Maximum Capacity or a health score."))
         facts.upsert(fact("jailbreak", .limitations, "Jailbreak status", "Not assessed", .unavailable, "App policy", "No exploit, jailbreak, or bypass tool is used."))
     }

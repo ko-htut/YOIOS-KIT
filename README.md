@@ -1,20 +1,21 @@
-# YIOS-KIT — SE2 Device & Recovery Center
+# YIOS-KIT — iPhone Device & Recovery Center
 
-A native, Apple-silicon macOS app for detailed, source-attributed inspection and official recovery of an **iPhone SE (2nd generation / iPhone12,8)**. The app includes its own pinned libimobiledevice/libirecovery command-line toolchain, so the user does not need Homebrew. Apple Configurator remains an optional, separately installed Apple component for official erase/firmware operations. No jailbreak, exploit, activation bypass, or unsigned firmware path is included.
+A native, Apple-silicon macOS app for source-attributed iPhone inspection and recovery. One exact, trusted iPhone with a valid ProductType can use the non-destructive Normal-iOS-to-Recovery transition, while erase, Revive, Restore, firmware selection, and other write-capable workflows remain bounded to fourteen explicitly reviewed **iPhone 8 through iPhone SE (2nd generation)** ProductType/board variants. The app includes its own pinned libimobiledevice/libirecovery command-line toolchain, so the user does not need Homebrew. Apple Configurator remains an optional, separately installed Apple component for official erase/firmware operations. Mock Location is a separate experimental capability and remains pinned to the SE2 only. No jailbreak, exploit, activation bypass, or unsigned firmware path is included.
 
 ## What the app does
 
 - Uses a dashboard-style native interface with a grouped sidebar, **Overview**, **Recovery**, **Evidence**, and **Activity** workspaces, mode-aware status, Quick Actions, and source-labelled readiness cards.
 - Includes a **Dependency Doctor** that reports the exact built-in tool source/version, optional installed fallback, and which capabilities are ready. A complete built-in suite is always preferred; tools from different installations are never mixed within one capability.
 - Adds a **Backup Center** in Activity that hands control to Finder. The app does not automate, start, observe, or claim completion of a backup and never asks for a backup password.
-- Adds an explicit, exact-target **Crash & Panic Reports** copy workflow. It requires one trusted Normal-mode SE2, creates a new local folder with verified private permissions, always uses `idevicecrashreport --keep`, never requests deletion, never uploads through this app, and never retries automatically.
+- Adds an explicit, exact-target **Crash & Panic Reports** copy workflow. It requires one supported, trusted iPhone in Normal iOS, creates a new local folder with verified private permissions, always uses `idevicecrashreport --keep`, never requests deletion, never uploads through this app, and never retries automatically.
 - Adds a bounded, structured **USB & Recovery Timeline** for the current app session. It records observed mode/PID transitions and this app's Apple-operation events without scraping iPhone syslog or inferring cable/hardware failure.
+- Adds guarded **Mock Location** for one exact, trusted SE2 running iOS 17.4 or later. It uses a no-root, in-process userspace tunnel and the DVT location service; it never auto-pairs, enables Developer Mode, mounts/downloads a Developer Disk Image, or falls back to a privileged/RemotePairing tunnel.
 - Builds one timestamped Device Center snapshot from current USB/mode evidence and, only in verified trusted Normal iOS, read-only lockdownd and targeted Configurator properties.
 - Shows available identity and software data such as device/model name, ProductType, hardware model, iOS/build, serial, CPID/BDID, model/region, baseband, ECID and UDID.
 - Shows available cellular/network data such as IMEI 1/2 and device-reported Wi-Fi/Bluetooth addresses. Linkable or personal values are masked until the user explicitly reveals them for 60 seconds.
 - Shows current charge/charging state and approximate total/free/category storage only when a device source returned coherent values. It never converts missing values to zero or “Normal.”
 - Shows source and evidence status for every fact and exports a local, permission-0600 report with identifiers masked by default.
-- Adds guarded **Restart** and **Shut Down** controls for one exact, trusted Normal-mode SE2. They require confirmation plus exact ECID, UDID, USB-port, mode, and Trust rechecks; they are unavailable in Recovery, DFU, RestoreOS, or USB-only states.
+- Adds guarded **Restart** and **Shut Down** controls for one exact, supported, trusted iPhone in Normal iOS. They require confirmation plus exact model, ECID, UDID, USB-port, mode, and Trust rechecks; they are unavailable in Recovery, DFU, RestoreOS, or USB-only states.
 - Opens Apple's official coverage page without automatically sending the serial number.
 - Requires exactly one connected Apple mobile device.
 - Pins the target ECID and rechecks it before every Apple operation.
@@ -22,13 +23,23 @@ A native, Apple-silicon macOS app for detailed, source-attributed inspection and
 - Proves Recovery/DFU with `irecovery`; a Recovery/DFU-looking PID alone cannot enable a write.
 - Detects the stuck RestoreOS intermediate state and blocks direct restore from it.
 - Shows a live Recovery/DFU button guide while monitoring the exact ECID.
+- Sends at most one exact-UDID Recovery request after two fresh identity and Trust checks; failures and timeouts are never retried automatically.
+- Includes a model-aware **DFU Assistant** for Home-button iPhones, iPhone 7/7 Plus, and iPhone 8-or-later button families. It arms a passive exact-target USB watcher; physical buttons remain required.
 - Offers Apple **Revive** first in verified Recovery Mode.
 - Offers full Apple **Restore** only in verified Recovery/DFU after the user types `ERASE`.
-- Offers **Factory Reset — Erase All Content & Settings** only for one paired, verified SE2 in Normal iOS.
+- Offers **Factory Reset — Erase All Content & Settings** only for one paired, exactly identified supported iPhone in Normal iOS.
 - Never retries a failed flash automatically.
 - Attempts to keep the Mac awake during an active Apple operation and prevents normal app quit.
 
 The app does **not** use 3uTools, jailbreak/exploit tools, activation-lock bypasses, `idevicerestore`, or write-capable `irecovery` commands. It never bypasses Apple signing and cannot install unsigned or custom firmware.
+
+### Recovery support matrix
+
+The non-destructive software transition into Recovery accepts one exact, trusted Normal-iOS iPhone with a syntactically valid ProductType, canonical ECID, UDID, and stable USB location. It checks the same target and existing Trust twice, sends `ideviceenterrecovery` once with the exact UDID, never uses a shell string, and never retries. This capability is intentionally separate from the destructive catalog.
+
+Inspection, guarded utilities, Factory Reset, Revive, Restore, and firmware selection continue to use the exact ProductType/board allowlist for **iPhone 8, 8 Plus, X, XS, XS Max, XR, 11, 11 Pro, 11 Pro Max, and SE (2nd generation)**, including their Apple hardware variants. iPhone 7/SE (1st generation) and iPhone 12 or later can use broad Recovery entry and model-aware physical guidance but remain outside destructive support. Recovery/DFU writes additionally require a complete matching `irecovery -q` ProductType, DeviceClass, CPID, and BDID attestation.
+
+The DFU Assistant is not one-click DFU: macOS cannot press the required physical buttons. It selects Home-button, iPhone 7, or modern Volume-button guidance from the exact ProductType and watches the pinned ECID/USB location. Stable Recovery is reported as missed DFU timing and monitoring continues. Classic DFU PID `0x1227` must pass targeted protocol and identity verification. Newer-device KIS/Debug USB PID `0x1881` is displayed only as unverified transport evidence; this build does not claim DFU or enable Restore from it.
 
 ## Requirements on this Mac
 
@@ -44,6 +55,14 @@ The libimobiledevice helper set is treated atomically: if the built-in set is
 incomplete or invalid, the app will use only a complete installed fallback or
 disable the affected capabilities.
 
+Mock Location is a separate app-private payload pinned to
+`pymobiledevice3 10.9.0`. This personal build uses Apple's
+`/usr/bin/python3 3.9` supplied on the current development Mac and bundles the
+complete pinned Python package closure; it never imports Homebrew or user-site
+packages. The build/package verifier fails closed if the interpreter, payload
+checksum, architecture, signature, or pinned upstream version differs; runtime
+selection additionally requires the canonical, non-writable in-app launcher.
+
 Install **Apple Configurator** from Apple only if you need Apple Revive, full
 Restore, or Factory Reset. Device inspection, Recovery/DFU verification,
 Normal-to-Recovery transition, guarded restart/shutdown, and crash-report copy
@@ -52,20 +71,31 @@ manual backup handoff.
 
 ## Use
 
-1. Double-click **SE2 Recovery Assistant.app**.
-2. Connect only the target SE2 and click **New Scan**. The Overview automatically loads richer details only after Normal iOS and existing Trust are verified.
+1. Double-click the packaged **YIOS-KIT.app**.
+2. Connect only one target iPhone and click **New Scan**. The Overview automatically loads richer details only after Normal iOS, exact model identity, and existing Trust are verified.
 3. Use **Evidence** to see exactly which source supplied each fact. Use **Activity** for Backup Center, an explicit crash-report copy, the redacted USB/recovery timeline, the app log, and the exact last error.
 4. **Copy summary** and **Export report** are redacted by default. **Reveal for 60s** is required before sensitive values appear on screen.
 5. For a usable phone already in verified Normal iOS, guarded **Restart**, **Shut Down**, or **Factory Reset** become available. Factory Reset irreversibly removes all content and settings without reinstalling or updating iOS.
-6. If the app reports RestoreOS, click **Guide me to Recovery** and follow the on-screen physical button sequence. Physical Recovery/DFU entry cannot be automated safely.
-7. If verified Recovery appears, try **Apple Revive** first if data matters.
-8. If data does not matter, choose **Erase & Restore**, verify the displayed ECID and firmware, then type the exact uppercase word `ERASE`.
-9. Keep the cable connected. After Factory Reset, wait for the Hello screen, then click **I checked the iPhone — Scan**; the app keeps other write actions and normal window closing blocked until this manual check.
+6. In trusted Normal iOS, choose **Enter Recovery (keep data)** for one exact, twice-checked, single-attempt software transition. If the helper is unavailable or RestoreOS appears, use **Guide me to Recovery** and the model-specific physical sequence.
+7. For DFU, expand the timing guide and choose **Start DFU Assistant**. Follow the physical steps; the assistant only watches and verifies the exact USB target. A black screen, timer, Recovery mode, or PID `0x1881` alone is not DFU success.
+8. If verified Recovery appears on a reviewed model, try **Apple Revive** first if data matters.
+9. If data does not matter and the exact model is in the reviewed catalog, choose **Erase & Restore**, verify the displayed ECID and firmware, then type the exact uppercase word `ERASE`.
+10. Keep the cable connected. After Factory Reset, wait for the Hello screen, then click **I checked the iPhone — Scan**; the app keeps other write actions and normal window closing blocked until this manual check.
+
+### Mock Location
+
+- First enable Developer Mode yourself on the iPhone and explicitly prepare the matching Developer Disk Image with trusted developer tooling. If the Developer Mode option is missing, YIOS-KIT can send one explicitly confirmed, twice-verified, exact-target Apple request that makes the Settings option expected. It does not enable Developer Mode, restart the iPhone, or claim that the option is visibly rendered; you must still turn it on and approve Apple's on-device restart and confirmation yourself.
+- Run the read-only readiness check, enter finite decimal latitude/longitude values, verify the exact pinned target, and explicitly start the simulation. The coordinate affects location-aware apps on that iPhone.
+- The default **Live session** keeps the developer session open; choose **Return to Real Location** before disconnecting or quitting.
+- The opt-in **Persistent until Clear/Reboot (Experimental)** mode waits for Apple's Set acknowledgement and then closes the developer session without sending Clear. It is designed to survive a cable disconnect, but compatibility varies and there is no read-back getter. Reconnect the same stable iPhone and choose **Return to Real Location**. Rebooting is expected to restore phone-side GPS, but YIOS-KIT still keeps its safety record and device-write/quit lock until an exact-target Clear is recorded.
+- If the recorded iPhone is permanently unavailable and a different stable iPhone is connected, **Forget Unavailable iPhone Record** can explicitly delete only YIOS-KIT's local safety record after a critical, default-Cancel warning. It sends no command to either phone, does not prove the unavailable phone returned to real location, and keeps that phone's location state described as unknown. Persistent sessions continue to be journaled by default; records are never discarded automatically.
+- Apple's developer service has no supported read-back getter. The app therefore says **assumed active** after the set call replies and **reset request sent — real GPS expected** after clear; it never claims either state was independently confirmed.
+- An interrupted/unknown session remains locked for review and offers only an exact-target clear. Other write operations remain blocked until the reset request is recorded.
 
 ### Backup Center, crash reports, and timeline
 
 - **Open Finder…** only foregrounds Finder. Select the iPhone under Locations and start/verify the backup yourself. For protected categories such as saved passwords and Health data, use Finder's encrypted local-backup option and keep its password safe.
-- **Copy from iPhone…** is privacy-sensitive and available only for one exact, paired, trusted SE2 in verified Normal iOS. The app checks ECID, UDID, USB location, mode, model, and Trust both before and after confirmation. It requires a writable local volume, verifies current ownership, strips inherited extended ACLs, and enforces a 0700 folder before contact; afterward it repeats owner/ACL checks and enforces 0700/0600 on every enumerated directory/file. Permission, enumeration, target, or keep-contract uncertainty prevents a success claim and arms a manual-review lock. It passes mandatory `--keep`, exposes no remove command, and retains no raw tool output or report filename in the app log. This app does not upload, but another sync service may upload files if you select one of its folders.
+- **Copy from iPhone…** is privacy-sensitive and available only for one exact, paired, trusted, supported iPhone in verified Normal iOS. The app checks model identity, ECID, UDID, USB location, mode, and Trust both before and after confirmation. It requires a writable local volume, verifies current ownership, strips inherited extended ACLs, and enforces a 0700 folder before contact; afterward it repeats owner/ACL checks and enforces 0700/0600 on every enumerated directory/file. Permission, enumeration, target, or keep-contract uncertainty prevents a success claim and arms a manual-review lock. It passes mandatory `--keep`, exposes no remove command, and retains no raw tool output or report filename in the app log. This app does not upload, but another sync service may upload files if you select one of its folders.
 - A filename containing `panic` is shown only as a filename observation. It is not proof of NAND, baseband, motherboard, or any other hardware failure.
 - The **USB & Recovery Timeline** is passive, in-memory, limited to 200 current-session events, and never enables an action. Its optional export masks identifiers and local paths and is stored with permission 0600.
 
@@ -77,7 +107,7 @@ The app will never bypass Activation Lock. After restore, the legitimate owner's
 
 - `ActivationState: Activated` is displayed only as a device-reported activation fact. It does **not** prove Find My or Activation Lock is off.
 - Warranty/AppleCare is not inferred. Use **Check coverage with Apple** and enter the serial yourself if desired.
-- The app does not claim motherboard, display, camera, Touch ID, NAND, baseband, or parts authenticity/health. For SE2 battery parts history, check **Settings > General > About > Parts & Service History** on the iPhone.
+- The app does not claim motherboard, display, camera, Face ID/Touch ID, NAND, baseband, or parts authenticity/health. Check **Settings > General > About > Parts & Service History** on the iPhone when that model and iOS version expose it.
 - Current charge is not Apple's Battery Health/Maximum Capacity. Battery cycle count and health are shown as unavailable when no supported read-only source exposes them.
 - Recovery/DFU/RestoreOS never reuses an older Normal-iOS battery, storage, SIM, or account snapshot as if it were current.
 - Default reports omit full ECID/UDID/serial/IMEI/SIM/MAC/device-name values, app lists, crash contents, syslog, screenshots, backups, account data, and Mac paths.
@@ -86,13 +116,13 @@ The app will never bypass Activation Lock. After restore, the legitimate owner's
 
 ## Factory Reset versus Restore
 
-**Factory Reset** uses Apple Configurator's targeted `erase` command on a paired SE2 that is fully booted in Normal iOS. It irreversibly removes user data and settings, keeps the currently installed iOS build, and does not download firmware. The app omits Configurator's eSIM-erasure option, so cellular eSIMs may remain. It blocks supervised devices because erase would remove supervision. This app cannot reliably verify Find My status, so you must sign out of Find My on the iPhone first. Factory Reset does not bypass Activation Lock and cannot repair a phone stuck in RestoreOS, Recovery, or DFU.
+**Factory Reset** uses Apple Configurator's targeted `erase` command on one paired, exactly identified supported iPhone that is fully booted in Normal iOS. It irreversibly removes user data and settings, keeps the currently installed iOS build, and does not download firmware. The app omits Configurator's eSIM-erasure option, so cellular eSIMs may remain. It blocks supervised devices because erase would remove supervision. This app cannot reliably verify Find My status, so you must sign out of Find My on the iPhone first. Factory Reset does not bypass Activation Lock and cannot repair a phone stuck in RestoreOS, Recovery, or DFU.
 
 **Full Restore** is the Recovery/DFU path. It erases the phone and installs Apple-signed iOS firmware.
 
 ## Firmware
 
-The default is the latest signed release obtained by Apple Configurator. You may explicitly choose **Use Configurator cache** to avoid downloading the same firmware again. Cached or manually chosen firmware receives a full ZIP integrity test, an `iPhone12,8` / `d79ap` BuildManifest compatibility check, and a sampled fingerprint plus pinned size and modification time; Apple still verifies signing during restore.
+The default is the latest signed release obtained by Apple Configurator. You may explicitly choose **Use Configurator cache** to avoid downloading the same firmware again. Cached or manually chosen firmware receives a full ZIP integrity test and an exact target check across `SupportedProductTypes`, consumer `BuildIdentity` DeviceClass, CPID, and BDID. Research identities are ignored for ordinary restores. The validated model, sampled fingerprint, file size, and modification time are pinned and rechecked before the operation; Apple still verifies signing during restore.
 
 ## About the earlier error
 
@@ -111,24 +141,31 @@ To rebuild the pinned third-party toolchain, then the app, run:
 
 ```zsh
 ./Scripts/build-bundled-tools.sh
+./Scripts/build-location-backend.sh
 ./build-app.sh
 ```
 
-For a tested local release plus matching app-source and complete pinned
-third-party-source archives, run:
+For a tested local release plus matching app-source and the included pinned
+third-party source/notice archives, run:
 
 ```zsh
 ./Scripts/package-release.sh
 ```
 
-The toolchain build downloads official release archives, verifies fixed SHA-256
+The toolchain builds download official release archives, verify fixed SHA-256
 digests, builds the complete dependency closure for `arm64-apple-macosx13.0`,
 relocates every non-system dependency to bundle-relative `@rpath` paths, signs
 the nested payload, and runs an offline verifier. It requires Xcode Command Line
 Tools and `pkg-config` on the maintainer Mac; those are build requirements, not
-end-user requirements. Exact source URLs, checksums, build flags, and full
-license texts are shipped under `Contents/Resources/ThirdPartyNotices`.
+end-user requirements for the inspection/recovery toolchain. The Mock Location
+payload additionally requires this Mac's `/usr/bin/python3 3.9` while building
+and running. Exact source URLs, checksums, build flags, the complete
+`pymobiledevice3` source archive, and license material are shipped inside the
+app resources.
 
 The local build is ad-hoc signed for this Mac, not App Store notarized. A public
 release should be signed with one Developer ID identity, notarized, and stapled.
+The current Mock Location dependency closure is intended for the owner's
+personal use; complete transitive license/source and notarization review is
+required before redistributing that payload.
 The source and bundled tools intentionally target `arm64-apple-macosx13.0`.

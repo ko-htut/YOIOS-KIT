@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 project_dir="${script_dir:h}"
-app_path="${1:-${project_dir}/build/SE2 Recovery Assistant.app}"
+app_path="${1:-${project_dir}/build/YIOS-KIT.app}"
 developer_dir="/Applications/Xcode.app/Contents/Developer"
 
 [[ -d "$app_path" ]] || {

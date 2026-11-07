@@ -10,7 +10,10 @@ struct ModelSafetyTestMain {
             if !condition() { failures.append(message) }
         }
 
-        let model = RecoveryModel(autoSelectFirmware: false)
+        let model = RecoveryModel(
+            autoSelectFirmware: false,
+            mockLocationController: MockLocationController.offlineFixture()
+        )
         expect(!model.canRestore, "no-device state must not allow Restore")
         expect(!model.canRevive, "no-device state must not allow Revive")
         expect(!model.canFactoryReset, "no-device state must not allow Factory Reset")
@@ -47,16 +50,33 @@ struct ModelSafetyTestMain {
         expect(!model.canFactoryReset, "Recovery must never allow Factory Reset")
 
         model.snapshot.modeVerified = true
-        expect(model.canRestore == ToolPaths.hasConfigurator, "verified SE2 Recovery should depend only on Configurator availability")
-        expect(model.canRevive == ToolPaths.hasConfigurator, "verified SE2 Recovery should allow Revive when Configurator exists")
+        model.snapshot.chipID = "0x8030"
+        model.snapshot.boardID = "0x10"
+        expect(!model.canRestore && !model.canRevive, "Recovery writes must remain blocked until the complete irecovery identity query is verified")
+        model.snapshot.recoveryIdentityQueryVerified = true
+        expect(model.canRestore == ToolPaths.hasConfigurator, "fully verified SE2 Recovery should depend only on Configurator availability")
+        expect(model.canRevive == ToolPaths.hasConfigurator, "fully verified SE2 Recovery should allow Revive when Configurator exists")
 
         model.snapshot.productType = "iPhone12,1"
         model.snapshot.hardwareModel = "n104ap"
-        expect(!model.canRestore, "non-SE2 Recovery must not allow Restore")
-        expect(!model.canRevive, "non-SE2 Recovery must not allow Revive")
+        model.snapshot.boardID = "0x04"
+        expect(model.canRestore == ToolPaths.hasConfigurator, "iPhone 11 is inside the supported Recovery range")
+        expect(model.canRevive == ToolPaths.hasConfigurator, "iPhone 11 is inside the supported Revive range")
+
+        model.snapshot.productType = "iPhone13,1"
+        model.snapshot.hardwareModel = "d52gap"
+        model.snapshot.chipID = "0x8101"
+        model.snapshot.boardID = "0x0A"
+        expect(!model.canRestore, "iPhone 12 mini must remain above the supported Restore boundary")
+        expect(!model.canRevive, "iPhone 12 mini must remain above the supported Revive boundary")
+        expect(model.primaryActionTitle == "Recovery verified — restore unsupported", "verified unsupported Recovery must not advertise Revive")
+        model.snapshot.mode = .dfu
+        expect(model.primaryActionTitle == "DFU verified — restore unsupported", "verified unsupported DFU must not advertise Restore")
 
         model.snapshot.productType = "iPhone12,8"
         model.snapshot.hardwareModel = "d79ap"
+        model.snapshot.chipID = "0x8030"
+        model.snapshot.boardID = "0x10"
         model.snapshot.mode = .normal
         expect(!model.canRestore && !model.canRevive, "Normal iOS must not expose Recovery/DFU write actions")
         model.snapshot.udid = "00008030-0001399A1401402E"
@@ -75,9 +95,21 @@ struct ModelSafetyTestMain {
         model.snapshot.locationID = 1_048_576
         model.snapshot.productType = "iPhone12,1"
         model.snapshot.hardwareModel = "n104ap"
-        expect(!model.canFactoryReset, "non-SE2 Normal device must block Factory Reset")
+        model.snapshot.boardID = "0x04"
+        expect(model.canFactoryReset == (ToolPaths.hasConfigurator && ToolPaths.idevicePair != nil), "iPhone 11 is inside the supported Normal-iOS Factory Reset range")
+        model.snapshot.productType = "iPhone13,1"
+        model.snapshot.hardwareModel = "d52gap"
+        model.snapshot.chipID = "0x8101"
+        model.snapshot.boardID = "0x0A"
+        expect(!model.canFactoryReset, "iPhone 12 mini must remain above the supported Factory Reset boundary")
+        expect(model.primaryActionEnabled, "a valid exact iPhone outside the destructive catalog must still allow non-destructive Recovery entry")
+        expect(model.primaryActionTitle == (ToolPaths.enterRecovery == nil ? "Guide me to Recovery" : "Enter Recovery (keep data)"), "unsupported-model Normal iOS must expose Recovery or its physical fallback honestly")
+        expect(model.canStartDFUAssistant, "a valid exact iPhone outside the destructive catalog must allow the passive DFU Assistant")
+        expect(!model.canRestore && !model.canRevive, "broad Recovery/DFU guidance must not broaden destructive eligibility")
         model.snapshot.productType = "iPhone12,8"
         model.snapshot.hardwareModel = "d79ap"
+        model.snapshot.chipID = "0x8030"
+        model.snapshot.boardID = "0x10"
 
         model.snapshot.mode = .multiple
         model.snapshot.deviceCount = 2
@@ -86,7 +118,8 @@ struct ModelSafetyTestMain {
 
         model.snapshot.deviceCount = 1
         model.snapshot.mode = .dfu
-        expect(model.canRestore == ToolPaths.hasConfigurator, "verified SE2 DFU should allow only Restore when Configurator exists")
+        model.snapshot.recoveryIdentityQueryVerified = true
+        expect(model.canRestore == ToolPaths.hasConfigurator, "fully verified SE2 DFU should allow only Restore when Configurator exists")
         expect(!model.canRevive, "DFU must never allow Revive")
 
         model.operationRunning = true
@@ -103,7 +136,10 @@ struct ModelSafetyTestMain {
         expect(!model.canChooseIPSW, "an armed restore workflow must freeze firmware selection")
         expect(!model.canFactoryReset, "an armed destructive workflow must block Factory Reset")
 
-        let factoryModel = RecoveryModel(autoSelectFirmware: false)
+        let factoryModel = RecoveryModel(
+            autoSelectFirmware: false,
+            mockLocationController: MockLocationController.offlineFixture()
+        )
         factoryModel.snapshot = DeviceSnapshot(
             mode: .normal,
             deviceCount: 1,
@@ -127,9 +163,11 @@ struct ModelSafetyTestMain {
         expect(factoryModel.canUseNormalDeviceUtilities == utilityToolsReady, "Normal device utilities must require the diagnostics and pairing tools")
         expect(factoryModel.canOpenFinderBackup, "verified Normal SE2 should allow only the user-controlled Finder handoff")
         expect(factoryModel.canCopyCrashReports == crashToolsReady, "verified Normal SE2 crash collection must require keep-capable crash and pairing tools")
+        expect(factoryModel.canStartDFUAssistant, "exact Normal fixture must begin eligible for the passive DFU Assistant")
         factoryModel.crashCopyReviewRequired = true
         expect(!factoryModel.canCopyCrashReports, "a keep/privacy/target review lock must block another crash-copy attempt")
         expect(!factoryModel.canOpenFinderBackup, "a crash-copy review lock must freeze target-labelled support handoffs until manual review")
+        expect(!factoryModel.canStartDFUAssistant, "a crash-copy review lock must block the DFU Assistant")
         factoryModel.crashCopyReviewRequired = false
         let oldPrivateFact = DeviceFact(
             id: "deviceName", group: .identity, label: "Device name", value: "Pre-Erase Private Name",
@@ -155,27 +193,33 @@ struct ModelSafetyTestMain {
         expect(!factoryModel.canFactoryReset, "an active operation must block an otherwise eligible Factory Reset")
         expect(!factoryModel.canUseNormalDeviceUtilities, "an active operation must block Restart and Shut Down")
         expect(!factoryModel.canOpenFinderBackup && !factoryModel.canCopyCrashReports, "an active operation must block every Support Center target action")
+        expect(!factoryModel.canStartDFUAssistant, "an active operation must block the DFU Assistant")
         factoryModel.operationRunning = false
         factoryModel.isScanning = true
         expect(!factoryModel.canFactoryReset, "scanning must block an otherwise eligible Factory Reset")
         expect(!factoryModel.canUseNormalDeviceUtilities, "scanning must block Normal device utilities")
         expect(!factoryModel.canOpenFinderBackup && !factoryModel.canCopyCrashReports, "scanning must block Support Center target actions")
+        expect(!factoryModel.canStartDFUAssistant, "scanning must block the DFU Assistant")
         factoryModel.isScanning = false
         factoryModel.isMonitoring = true
         expect(!factoryModel.canFactoryReset, "USB monitoring must block an otherwise eligible Factory Reset")
         expect(!factoryModel.canUseNormalDeviceUtilities, "USB monitoring must block Normal device utilities")
         expect(!factoryModel.canOpenFinderBackup && !factoryModel.canCopyCrashReports, "USB monitoring must block Support Center target actions")
+        expect(!factoryModel.canStartDFUAssistant, "an active USB watcher must block another DFU Assistant")
         factoryModel.isMonitoring = false
         factoryModel.isValidatingFirmware = true
         expect(!factoryModel.canFactoryReset, "firmware validation must block an otherwise eligible Factory Reset")
         expect(!factoryModel.canUseNormalDeviceUtilities, "firmware validation must block Normal device utilities")
+        expect(!factoryModel.canStartDFUAssistant, "firmware validation must block the DFU Assistant")
         factoryModel.isValidatingFirmware = false
         factoryModel.isLoadingDeviceCenter = true
         expect(!factoryModel.canFactoryReset, "Device Center collection must block Factory Reset")
         expect(!factoryModel.canUseNormalDeviceUtilities, "Device Center collection must block Restart and Shut Down")
+        expect(!factoryModel.canStartDFUAssistant, "Device Center collection must block the DFU Assistant")
         factoryModel.isLoadingDeviceCenter = false
         factoryModel.destructiveWorkflowActive = true
         expect(!factoryModel.canFactoryReset, "a destructive workflow must block an otherwise eligible Factory Reset")
+        expect(!factoryModel.canStartDFUAssistant, "a destructive workflow must block the DFU Assistant")
         factoryModel.destructiveWorkflowActive = false
         factoryModel.postResetReviewRequired = true
         expect(!factoryModel.canFactoryReset, "pending Hello-screen review must block another Factory Reset")
@@ -183,6 +227,7 @@ struct ModelSafetyTestMain {
         expect(factoryModel.primaryActionTitle == "I checked the iPhone — Scan", "pending post-reset review must expose only a manual Scan action")
         expect(!factoryModel.canUseNormalDeviceUtilities, "pending Hello-screen review must block Restart and Shut Down")
         expect(!factoryModel.canOpenFinderBackup && !factoryModel.canCopyCrashReports, "pending Hello-screen review must block Finder handoff and crash collection")
+        expect(!factoryModel.canStartDFUAssistant, "pending Hello-screen review must block the DFU Assistant")
         factoryModel.scan()
         expect(factoryModel.postResetReviewRequired, "ordinary scan() must never clear the post-reset Hello-screen interlock")
         expect(!factoryModel.isScanning, "ordinary scan() must not start a device query during post-reset review")
@@ -197,6 +242,67 @@ struct ModelSafetyTestMain {
         factoryModel.snapshot.mode = .restoreOS
         expect(!factoryModel.canUseNormalDeviceUtilities, "RestoreOS must block Restart and Shut Down")
         expect(!factoryModel.canOpenFinderBackup && !factoryModel.canCopyCrashReports, "RestoreOS must block Normal-mode support actions")
+
+        let mockTargetSnapshot = DeviceSnapshot(
+            mode: .normal,
+            deviceCount: 1,
+            usbPID: 0x12A8,
+            locationID: 1_048_576,
+            ecid: "0x1399A1401402E",
+            udid: "00008030-0001399A1401402E",
+            productType: "iPhone12,8",
+            hardwareModel: "d79ap",
+            productVersion: "17.7",
+            buildVersion: "21H16",
+            activationState: "Activated",
+            modeVerified: true
+        )
+        if let exactTarget = try? MockLocationExactTarget(snapshot: mockTargetSnapshot) {
+            let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+            let recovered = MockLocationJournalRecord(
+                state: .assumedActive,
+                pin: exactTarget.pin,
+                stablePin: exactTarget.stablePin,
+                requestDispatched: true,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+            let mockReviewModel = RecoveryModel(
+                autoSelectFirmware: false,
+                mockLocationController: MockLocationController.offlineFixture(recoveredRecord: recovered)
+            )
+            mockReviewModel.snapshot = mockTargetSnapshot
+            expect(mockReviewModel.mockLocationBlocksDeviceMutation, "an interrupted Mock Location journal must arm the global mutation interlock")
+            expect(!mockReviewModel.canRestore && !mockReviewModel.canRevive && !mockReviewModel.canFactoryReset, "Mock Location review must block every Apple write path")
+            expect(!mockReviewModel.canUseNormalDeviceUtilities, "Mock Location review must block restart and shutdown")
+            expect(!mockReviewModel.canCopyCrashReports && !mockReviewModel.canOpenFinderBackup, "Mock Location review must block support-device operations")
+            expect(!mockReviewModel.canChooseIPSW && !mockReviewModel.canRefreshDeviceCenter, "Mock Location review must freeze firmware and Device Center mutation paths")
+            expect(!mockReviewModel.primaryActionEnabled, "Mock Location review must disable Recovery entry from the generic primary action")
+            expect(!mockReviewModel.canStartDFUAssistant, "Mock Location review must block the DFU Assistant watcher")
+
+            let persistentRecord = MockLocationJournalRecord(
+                state: .assumedPersistent,
+                pin: exactTarget.pin,
+                stablePin: exactTarget.stablePin,
+                setMode: .persistentUntilClearOrReboot,
+                requestDispatched: true,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+            let persistentModel = RecoveryModel(
+                autoSelectFirmware: false,
+                mockLocationController: MockLocationController.offlineFixture(recoveredRecord: persistentRecord)
+            )
+            persistentModel.snapshot = mockTargetSnapshot
+            expect(persistentModel.mockLocationController.isAssumedPersistent, "clean persistent journal must remain an explicit assumed-persistent state")
+            expect(persistentModel.mockLocationBlocksDeviceMutation, "assumed persistent location must arm the global mutation interlock")
+            expect(!persistentModel.canRestore && !persistentModel.canRevive && !persistentModel.canFactoryReset, "assumed persistent location must block every Apple write path")
+            expect(!persistentModel.canUseNormalDeviceUtilities && !persistentModel.canCopyCrashReports, "assumed persistent location must block power and support-device operations")
+            expect(!persistentModel.canChooseIPSW && !persistentModel.canRefreshDeviceCenter && !persistentModel.primaryActionEnabled, "assumed persistent location must freeze firmware, detail refresh, and generic actions")
+            expect(!persistentModel.canStartDFUAssistant, "assumed persistent location must block the DFU Assistant watcher")
+        } else {
+            expect(false, "Mock Location safety fixture must produce an exact target")
+        }
 
         if failures.isEmpty {
             print("MODEL SAFETY TEST PASS")

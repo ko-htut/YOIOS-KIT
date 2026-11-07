@@ -1,0 +1,43 @@
+#!/bin/zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+contents_dir="${script_dir:h:h}"
+backend_script="${contents_dir}/Resources/YIOSLocation/yios_location_backend.py"
+
+fail_private_home() {
+  /usr/bin/printf '%s\n' \
+    '{"code":"permission_denied","event":"error","phase":"privateHome","protocol":1,"status":"error"}'
+  exit 4
+}
+
+case "${HOME:-}" in
+  /*) ;;
+  *) fail_private_home ;;
+esac
+
+private_home="${HOME}/Library/Application Support/YIOS-KIT/MockLocationBackend"
+if [[ -L "$private_home" ]]; then
+  fail_private_home
+fi
+
+umask 077
+/bin/mkdir -p "$private_home" 2>/dev/null || fail_private_home
+/bin/chmod 0700 "$private_home" 2>/dev/null || fail_private_home
+
+current_uid="$(/usr/bin/id -u 2>/dev/null)" || fail_private_home
+directory_uid="$(/usr/bin/stat -f '%u' "$private_home" 2>/dev/null)" || fail_private_home
+directory_mode="$(/usr/bin/stat -f '%Lp' "$private_home" 2>/dev/null)" || fail_private_home
+[[ "$directory_uid" == "$current_uid" && "$directory_mode" == "700" && ! -L "$private_home" ]] \
+  || fail_private_home
+
+export HOME="$private_home"
+export XDG_CACHE_HOME="${private_home}/.cache"
+export XDG_CONFIG_HOME="${private_home}/.config"
+export XDG_DATA_HOME="${private_home}/.local/share"
+/bin/mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" 2>/dev/null \
+  || fail_private_home
+/bin/chmod 0700 "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "${private_home}/.local" "$XDG_DATA_HOME" 2>/dev/null \
+  || fail_private_home
+
+exec /usr/bin/python3 -I -B "$backend_script" "$@"
