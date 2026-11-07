@@ -50,7 +50,7 @@ enum USBMonitorEvent: Equatable {
 /// Identity boundary between a stable raw DFU USB observation and a user-
 /// visible verified result. This policy is intentionally independent of the
 /// destructive model catalog: it can verify that an unsupported iPhone is the
-/// pinned DFU target without enabling Restore for that model.
+/// pinned classic-DFU target without granting any other device capability.
 struct DFUVerificationPin: Equatable {
     let ecid: String
     let locationID: Int?
@@ -73,6 +73,7 @@ struct DFUVerificationPin: Equatable {
     func matches(_ snapshot: DeviceSnapshot) -> Bool {
         guard snapshot.deviceCount == 1,
               snapshot.mode == .dfu,
+              snapshot.usbPID == 0x1227,
               snapshot.modeVerified,
               !snapshot.identityConflict,
               DeviceDetector.normalizeECID(snapshot.ecid) == DeviceDetector.normalizeECID(ecid),
@@ -82,6 +83,41 @@ struct DFUVerificationPin: Equatable {
         if let locationID, snapshot.locationID != locationID { return false }
         if let productType,
            snapshot.productType?.caseInsensitiveCompare(productType) != .orderedSame {
+            return false
+        }
+        return true
+    }
+}
+
+/// Raw KIS observation pinned before the slower Apple Configurator scan.
+/// This prevents a replacement phone from satisfying the assistant result.
+struct KISVerificationPin: Equatable {
+    let ecid: String
+    let locationID: Int?
+    let productType: String?
+
+    init?(ecid: String, locationID: Int?, productType: String?) {
+        guard let canonicalECID = DeviceDetector.canonicalECIDHex(ecid),
+              DeviceDetector.normalizeECID(canonicalECID) != "0" else {
+            return nil
+        }
+        if let productType,
+           IPhoneButtonFamily.classify(productType: productType) == nil {
+            return nil
+        }
+        self.ecid = canonicalECID
+        self.locationID = locationID
+        self.productType = productType
+    }
+
+    func matches(_ target: DFURestoreTarget) -> Bool {
+        guard target.proof == .appleConfiguratorKIS,
+              DeviceDetector.normalizeECID(target.ecid) == DeviceDetector.normalizeECID(ecid) else {
+            return false
+        }
+        if let locationID, target.locationID != locationID { return false }
+        if let productType,
+           target.productType.caseInsensitiveCompare(productType) != .orderedSame {
             return false
         }
         return true
@@ -123,8 +159,9 @@ struct DFUMonitorTracker {
         }
 
         // Some newer devices expose KIS/Debug USB as PID 0x1881 during the
-        // path toward DFU. The current classic libirecovery verifier cannot
-        // attest that transport, so it is evidence for guidance only.
+        // path toward DFU. The classic verification pin cannot attest that
+        // transport; the caller must perform a separate exact Configurator
+        // restorable-target scan before presenting it as eligible.
         if snapshot.usbPID == 0x1881 {
             candidateMode = nil
             candidateCount = 0

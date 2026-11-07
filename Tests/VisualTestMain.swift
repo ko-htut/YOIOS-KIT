@@ -9,6 +9,8 @@ private enum VisualScenario: String, CaseIterable {
     case restoreOSDFUExpanded = "restoreos-dfu-expanded"
     case recovery
     case dfu
+    case genericDFU = "generic-dfu"
+    case kisDFU = "kis-dfu"
     case postResetReview = "post-reset-review"
     case multiple
     case usbUnavailable = "usb-unavailable"
@@ -235,6 +237,16 @@ struct VisualTestMain {
             model.statusText = "DFU Mode verified"
             model.detailText = "The display should remain black. DFU cannot use Revive; choose Full Restore below only if permanent erasure is acceptable."
 
+        case .genericDFU:
+            model.snapshot = genericDFUFixture(kis: false)
+            model.statusText = "Exact iPhone DFU target verified"
+            model.detailText = "DFU Factory Restore can permanently erase this exact iPhone and reinstall Apple's latest compatible signed iOS. Activation Lock remains."
+
+        case .kisDFU:
+            model.snapshot = genericDFUFixture(kis: true)
+            model.statusText = "Apple-restorable KIS DFU target verified"
+            model.detailText = "Apple Configurator attested this exact Debug USB target. Raw KIS PID alone is never accepted for erase and reinstall."
+
         case .postResetReview:
             applyNormalFixture(to: model)
             model.snapshot.activationState = "Unactivated"
@@ -308,6 +320,24 @@ struct VisualTestMain {
             chipID: String(format: "0x%X", supportedModel.chipID),
             boardID: String(format: "0x%X", supportedModel.boardID),
             recoveryIdentityQueryVerified: identityQueryVerified
+        )
+    }
+
+    private static func genericDFUFixture(kis: Bool) -> DeviceSnapshot {
+        DeviceSnapshot(
+            mode: .dfu,
+            deviceCount: 1,
+            usbPID: kis ? 0x1881 : 0x1227,
+            locationID: 1_048_576,
+            ecid: "0x1399A1401402E",
+            productType: kis ? "iPhone12,8" : "iPhone18,3",
+            hardwareModel: kis ? "d79ap" : "d93ap",
+            modeVerified: !kis,
+            chipID: kis ? "0x8030" : "0x8301",
+            boardID: kis ? "0x10" : "0x0A",
+            recoveryIdentityQueryVerified: kis,
+            recoveryIdentityQueryTargetVerified: !kis,
+            configuratorDFURestoreVerified: kis
         )
     }
 

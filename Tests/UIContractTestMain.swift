@@ -7,6 +7,8 @@ private enum UIContractScenario: String, CaseIterable {
     case restoreOS = "restoreos"
     case recovery
     case dfu
+    case genericDFU = "generic-dfu"
+    case kisDFU = "kis-dfu"
     case usbUnavailable = "usb-unavailable"
     case multiple
     case postResetReview = "post-reset-review"
@@ -326,6 +328,41 @@ struct UIContractTestMain {
             model.statusText = "DFU Mode verified"
             model.detailText = "DFU is verified; only the explicit Restore path is available."
 
+        case .genericDFU:
+            model.snapshot = DeviceSnapshot(
+                mode: .dfu,
+                deviceCount: 1,
+                usbPID: 0x1227,
+                locationID: 1_048_576,
+                ecid: "0x1399A1401402E",
+                productType: "iPhone18,3",
+                hardwareModel: "d93ap",
+                modeVerified: true,
+                chipID: "0x8301",
+                boardID: "0x0A",
+                recoveryIdentityQueryTargetVerified: true
+            )
+            model.statusText = "Exact iPhone DFU target verified"
+            model.detailText = "DFU Factory Restore can erase this exact iPhone and reinstall Apple's latest compatible signed iOS."
+
+        case .kisDFU:
+            model.snapshot = DeviceSnapshot(
+                mode: .dfu,
+                deviceCount: 1,
+                usbPID: 0x1881,
+                locationID: 1_048_576,
+                ecid: "0x1399A1401402E",
+                productType: "iPhone12,8",
+                hardwareModel: "d79ap",
+                modeVerified: false,
+                chipID: "0x8030",
+                boardID: "0x10",
+                recoveryIdentityQueryVerified: true,
+                configuratorDFURestoreVerified: true
+            )
+            model.statusText = "Apple-restorable KIS DFU target verified"
+            model.detailText = "Apple Configurator attested this exact Debug USB target; raw KIS PID alone is never sufficient."
+
         case .usbUnavailable:
             model.snapshot = DeviceSnapshot(
                 mode: .usbUnavailable,
@@ -563,6 +600,29 @@ struct UIContractTestMain {
             expect(model.canRestore == configuratorReady, scenario, "DFU Restore availability must match Configurator")
             expect(!model.canStartDFUAssistant, scenario, "DFU Assistant must stop once the target is already in DFU")
 
+        case .genericDFU, .kisDFU:
+            expect(model.isGenericDFURestoreTarget, scenario, "fixture must create a generic DFU Factory Restore target")
+            if scenario == .genericDFU {
+                expect(model.currentSupportedModel == nil, scenario, "future generic DFU target must remain outside the reviewed catalog")
+                expect(!model.snapshot.hasVerifiedSupportedDeviceIdentity, scenario, "future generic DFU target must not inherit reviewed catalog status")
+            } else {
+                expect(model.currentSupportedModel == SupportedDeviceCatalog.se2, scenario, "KIS fixture must retain its known ProductType identity")
+                expect(model.snapshot.hasVerifiedSupportedDeviceIdentity, scenario, "KIS fixture must prove that transport policy, not catalog lookup, selects generic restore")
+            }
+            expect(!model.canFactoryReset && !model.canRevive, scenario, "generic DFU eligibility must not broaden Factory Reset or Revive")
+            expect(model.canRestore == configuratorReady, scenario, "generic DFU Restore availability must match Configurator")
+            expect(!model.canChooseIPSW, scenario, "generic DFU target must not expose custom IPSW selection")
+            expect(model.restoreButtonTitle == "Erase & Reinstall…", scenario, "generic DFU restore must have an honest button label")
+            expect(model.restoreActionTitle == "DFU Factory Restore — Erase & Reinstall iOS", scenario, "generic DFU restore action title is incorrect")
+            expect(model.restoreFirmwareSummary.localizedCaseInsensitiveContains("latest signed iOS"), scenario, "generic DFU firmware summary must identify Apple-latest firmware")
+            expect(
+                model.primaryActionTitle == (configuratorReady ? "DFU target verified — erase & reinstall below" : "DFU target verified — Apple Configurator required"),
+                scenario,
+                "generic DFU primary guidance is incorrect"
+            )
+            expect(!model.primaryActionEnabled, scenario, "generic DFU directive must not be an actionable primary button")
+            expect(!model.canStartDFUAssistant, scenario, "DFU Assistant must stop once a generic DFU target is attested")
+
         case .usbUnavailable:
             expect(model.primaryActionTitle == "Guide me to Recovery", scenario, "wrong USB-unavailable primary label")
             expect(model.primaryActionEnabled, scenario, "physical Recovery guide must remain available")
@@ -658,7 +718,7 @@ struct UIContractTestMain {
         switch scenario {
         case .restoreOS, .recovery, .usbUnavailable, .postResetReview:
             expectsGuide = true
-        case .noDevice, .normal, .dfu, .multiple:
+        case .noDevice, .normal, .dfu, .genericDFU, .kisDFU, .multiple:
             expectsGuide = false
         }
         expect(
@@ -721,7 +781,13 @@ struct UIContractTestMain {
             )
             assertButton("firmwareMenu", expectedLabel: "Firmware", expectedEnabled: model.canChooseIPSW, nodes: nodes, scenario: scenario)
             assertButton("reviveButton", expectedLabel: "Try Revive", expectedEnabled: model.canRevive, nodes: nodes, scenario: scenario)
-            assertButton("restoreButton", expectedLabel: "Erase & Restore", expectedEnabled: model.canRestore, nodes: nodes, scenario: scenario)
+            assertButton(
+                "restoreButton",
+                expectedLabel: model.isGenericDFURestoreTarget ? "Erase & Reinstall" : "Erase & Restore",
+                expectedEnabled: model.canRestore,
+                nodes: nodes,
+                scenario: scenario
+            )
             assertButton("factoryResetButton", expectedLabel: "Factory Reset", expectedEnabled: model.canFactoryReset, nodes: nodes, scenario: scenario)
         }
     }
@@ -1034,7 +1100,7 @@ struct UIContractTestMain {
             "Button(model.primaryActionTitle)",
             "Menu(\"Firmware\")",
             "Button(\"Try Revive\")",
-            "Button(\"Erase & Restore…\")",
+            "Button(model.restoreButtonTitle)",
             "Button(\"Factory Reset…\")",
             "Button(\"Start DFU Assistant\")"
         ]
@@ -1066,7 +1132,10 @@ struct UIContractTestMain {
 
         let destructiveContracts = [
             "alert.addButton(withTitle: \"Cancel\")\n        alert.addButton(withTitle: \"Erase All Content & Settings\")",
-            "alert.addButton(withTitle: \"Cancel\")\n        alert.addButton(withTitle: \"Erase and Restore\")",
+            "alert.addButton(withTitle: \"Cancel\")\n        alert.addButton(withTitle: \"Erase & Reinstall\")",
+            "DestructiveRestoreConfirmationPolicy(ecid: target.ecid)",
+            "ALL DATA AND SETTINGS WILL BE PERMANENTLY ERASED",
+            "Activation Lock still requires the legitimate Apple Account",
             "response == .alertSecondButtonReturn &&",
             "lastError = redact(error)",
             "lastError = line"
@@ -1141,11 +1210,12 @@ struct UIContractTestMain {
 
         let recoveryIdentityContracts = [
             "recoveryIdentityQueryVerified",
+            "recoveryIdentityQueryTargetVerified",
             "let requestedECID = snapshot.ecid",
             "parseRecoveryIdentityQuery(combined)",
+            "evidence.hasCompleteIPhoneIdentity(for: requestedECID)",
             "evidence.exactModel(for: requestedECID)",
-            "snapshot.supportedDeviceModel == queriedModel",
-            "ProductType, board, CPID, and BDID"
+            "snapshot.supportedDeviceModel == queriedModel"
         ]
         for contract in recoveryIdentityContracts where !source.contains(contract) {
             failures.append("Multi-model recovery identity source contract is missing \(contract)")

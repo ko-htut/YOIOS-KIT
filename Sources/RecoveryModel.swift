@@ -3,9 +3,85 @@ import Combine
 import Foundation
 import UniformTypeIdentifiers
 
+private enum RestoreOperationTarget: Equatable {
+    case reviewed(ecid: String, model: SupportedDeviceModel)
+    case genericDFU(DFURestoreTarget)
+
+    var ecid: String {
+        switch self {
+        case .reviewed(let ecid, _): return ecid
+        case .genericDFU(let target): return target.ecid
+        }
+    }
+
+    var productType: String {
+        switch self {
+        case .reviewed(_, let model): return model.productType
+        case .genericDFU(let target): return target.productType
+        }
+    }
+
+    var displayIdentity: String {
+        switch self {
+        case .reviewed(_, let model): return model.identitySummary
+        case .genericDFU(let target): return target.displayIdentity
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .reviewed(_, let model): return model.marketingName
+        case .genericDFU(let target): return target.productType
+        }
+    }
+
+    var reviewedModel: SupportedDeviceModel? {
+        if case .reviewed(_, let model) = self { return model }
+        return nil
+    }
+
+    var isGenericDFU: Bool {
+        if case .genericDFU = self { return true }
+        return false
+    }
+
+    var postBootPin: RestorePostBootPin? {
+        switch self {
+        case .reviewed(let ecid, let model):
+            return RestorePostBootPin(
+                ecid: ecid,
+                productType: model.productType,
+                displayName: model.marketingName,
+                reviewedModel: model
+            )
+        case .genericDFU(let target):
+            return RestorePostBootPin(target: target)
+        }
+    }
+
+    func matches(
+        _ snapshot: DeviceSnapshot,
+        configurator: ConfiguratorDFURestoreInfo?
+    ) -> Bool {
+        switch self {
+        case .reviewed(let ecid, let model):
+            let reviewedTransportIsAllowed = snapshot.mode == .recovery ||
+                (snapshot.mode == .dfu && snapshot.usbPID == 0x1227)
+            return snapshot.deviceCount == 1 &&
+                reviewedTransportIsAllowed &&
+                snapshot.modeVerified && snapshot.hasVerifiedSupportedDeviceIdentity &&
+                snapshot.supportedDeviceModel == model &&
+                DeviceDetector.normalizeECID(snapshot.ecid) == DeviceDetector.normalizeECID(ecid)
+        case .genericDFU(let target):
+            guard let configurator else { return false }
+            return target.matches(snapshot: snapshot, configurator: configurator)
+        }
+    }
+}
+
 private struct RestorePlan {
     let ipsw: IPSWInfo?
-    let target: SupportedDeviceModel
+    let target: RestoreOperationTarget
 
     var firmwareDescription: String {
         ipsw?.title ?? "latest currently signed iOS from Apple"
@@ -56,6 +132,7 @@ final class RecoveryModel: ObservableObject {
     private var monitorTimer: DispatchSourceTimer?
     private var monitorGeneration = UUID()
     private var pendingDFUVerification: DFUVerificationPin?
+    private var pendingKISVerification: KISVerificationPin?
     private var activeProcess: Process?
     private var caffeinateProcess: Process?
     private var appleCommandSucceeded = false
@@ -64,6 +141,7 @@ final class RecoveryModel: ObservableObject {
     private var expectedOperationCommand: String?
     private var expectedOperationUDID: String?
     private var expectedOperationModel: SupportedDeviceModel?
+    private var expectedOperationPostBootPin: RestorePostBootPin?
     private var hasStarted = false
     private var deviceCenterGeneration = UUID()
     private var firmwareValidationGeneration = UUID()
@@ -130,18 +208,64 @@ final class RecoveryModel: ObservableObject {
         return selectedIPSW.isCompatible(with: model)
     }
 
+    private func restoreTarget(for candidate: DeviceSnapshot) -> RestoreOperationTarget? {
+        let reviewedTransportIsAllowed = candidate.mode == .recovery ||
+            (candidate.mode == .dfu && candidate.usbPID == 0x1227)
+        if candidate.deviceCount == 1,
+           reviewedTransportIsAllowed,
+           candidate.modeVerified,
+           candidate.hasVerifiedSupportedDeviceIdentity,
+           let ecid = DeviceDetector.canonicalECIDHex(candidate.ecid),
+           let model = candidate.supportedDeviceModel {
+            return .reviewed(ecid: ecid, model: model)
+        }
+        if let target = DFURestoreTarget(snapshot: candidate) {
+            return .genericDFU(target)
+        }
+        return nil
+    }
+
+    private var currentRestoreTarget: RestoreOperationTarget? {
+        restoreTarget(for: snapshot)
+    }
+
+    var isGenericDFURestoreTarget: Bool {
+        currentRestoreTarget?.isGenericDFU == true
+    }
+
+    var restoreButtonTitle: String {
+        isGenericDFURestoreTarget ? "Erase & Reinstall…" : "Erase & Restore…"
+    }
+
+    var restoreActionTitle: String {
+        isGenericDFURestoreTarget
+            ? "DFU Factory Restore — Erase & Reinstall iOS"
+            : "Erase and reinstall iOS"
+    }
+
+    var restoreFirmwareSummary: String {
+        if isGenericDFURestoreTarget {
+            return "Latest signed iOS from Apple — custom IPSW is unavailable for this generic DFU target."
+        }
+        return selectedIPSW == nil
+            ? "Apple Configurator downloads the official firmware."
+            : "BuildManifest exact-target compatibility: \(selectedIPSW?.compatibilityDescription ?? "not available") • \(selectedIPSW?.url.lastPathComponent ?? "")"
+    }
+
     var canChooseIPSW: Bool {
         !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
         !isMonitoring && !isScanning && !isValidatingFirmware && !isLoadingDeviceCenter &&
+        !isGenericDFURestoreTarget &&
         snapshot.deviceCount == 1 && snapshot.hasVerifiedSupportedDeviceIdentity
     }
 
     var canRestore: Bool {
-        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
-        !isScanning && !isMonitoring && snapshot.deviceCount == 1 &&
-        (snapshot.mode == .recovery || snapshot.mode == .dfu) && snapshot.hasVerifiedSupportedDeviceIdentity &&
-        snapshot.ecid != nil && snapshot.modeVerified && cfgutilAvailable &&
-        selectedFirmwareMatchesCurrentDevice && !isValidatingFirmware && !isLoadingDeviceCenter
+        guard !operationRunning, !destructiveWorkflowActive, !postResetReviewRequired,
+              !crashCopyReviewRequired, !mockLocationBlocksDeviceMutation,
+              !isScanning, !isMonitoring, !isValidatingFirmware, !isLoadingDeviceCenter,
+              cfgutilAvailable, let target = currentRestoreTarget else { return false }
+        if target.isGenericDFU { return selectedIPSW == nil }
+        return selectedFirmwareMatchesCurrentDevice
     }
 
     var canRevive: Bool {
@@ -197,6 +321,11 @@ final class RecoveryModel: ObservableObject {
                 ? "Recovery verified — restore unsupported"
                 : "Recovery detected — verification unavailable"
         case .dfu:
+            if isGenericDFURestoreTarget {
+                return cfgutilAvailable
+                    ? "DFU target verified — erase & reinstall below"
+                    : "DFU target verified — Apple Configurator required"
+            }
             if snapshot.modeVerified && snapshot.hasVerifiedSupportedDeviceIdentity {
                 return cfgutilAvailable
                     ? "DFU confirmed — choose Restore below"
@@ -495,6 +624,7 @@ final class RecoveryModel: ObservableObject {
                 self.isScanning = false
                 self.apply(detected)
                 self.completePendingDFUVerification(with: detected)
+                self.completePendingKISVerification(with: detected)
                 if detected.deviceCount == 1 && detected.mode == .normal && detected.modeVerified {
                     self.refreshDeviceCenter()
                 }
@@ -1376,71 +1506,89 @@ final class RecoveryModel: ObservableObject {
     }
 
     func startRestore() {
-        guard canRestore,
-              let pinnedECID = snapshot.ecid,
-              let pinnedModel = snapshot.supportedDeviceModel else {
+        guard canRestore, let target = currentRestoreTarget else {
             showAlert(
                 title: "Restore is not available",
-                message: "Exactly one fully verified supported iPhone is required in Recovery or DFU, and any selected IPSW must match that exact model. RestoreOS and unknown modes are blocked."
+                message: "A reviewed Recovery/DFU identity or one exact Apple-restorable iPhone DFU/KIS target is required. Generic DFU restore uses only Apple's latest signed firmware; custom IPSW is blocked."
             )
             return
         }
-        let plan = RestorePlan(ipsw: selectedIPSW, target: pinnedModel)
+        let plan = RestorePlan(ipsw: selectedIPSW, target: target)
         destructiveWorkflowActive = true
 
         statusText = "Rechecking the exact target before restore…"
         isScanning = true
         workQueue.async { [weak self] in
             let rechecked = DeviceDetector.enriched()
+            let configurator: ConfiguratorDFURestoreInfo?
+            if plan.target.isGenericDFU,
+               case .success(let info) = ConfiguratorDFURestoreProbe.inspect(ecid: plan.target.ecid) {
+                configurator = info
+            } else {
+                configurator = nil
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isScanning = false
-                guard self.sameECID(pinnedECID, rechecked.ecid),
-                      rechecked.deviceCount == 1,
-                      (rechecked.mode == .recovery || rechecked.mode == .dfu),
-                      rechecked.hasVerifiedSupportedDeviceIdentity,
-                      rechecked.supportedDeviceModel == plan.target,
-                      rechecked.modeVerified else {
+                guard plan.target.matches(rechecked, configurator: configurator) else {
                     self.destructiveWorkflowActive = false
                     self.apply(rechecked)
                     self.showAlert(
                         title: "Target verification failed",
-                        message: "The same \(plan.target.identitySummary) was not stably verified in Recovery/DFU. No erase command was started."
+                        message: "The exact \(plan.target.displayIdentity) DFU/Recovery identity, USB location, or Apple-restorable state changed. No erase command was started."
+                    )
+                    return
+                }
+                guard !self.hasCompetingRestoreClient() else {
+                    self.destructiveWorkflowActive = false
+                    self.showAlert(
+                        title: "Another restore tool is open",
+                        message: "Close Apple Configurator, 3uTools, idevicerestore, another cfgutil session, and Finder device operations. No restore command was started."
+                    )
+                    return
+                }
+                guard self.hasEnoughFreeSpace() else {
+                    self.destructiveWorkflowActive = false
+                    self.showAlert(
+                        title: "Not enough free disk space",
+                        message: "At least 20 GB of free Mac storage is required before Restore. No erase command was started."
                     )
                     return
                 }
                 self.snapshot = rechecked
-                guard self.confirmErase(target: rechecked, firmware: plan.firmwareDescription) else {
+                guard self.confirmErase(target: plan.target, firmware: plan.firmwareDescription) else {
                     self.destructiveWorkflowActive = false
                     self.statusText = "Restore cancelled — no data was erased."
-                    self.appendLog("Erase confirmation was cancelled or did not match ERASE.")
+                    self.appendLog("Target-bound erase confirmation was cancelled or incomplete.")
                     return
                 }
-                self.finalizeRestoreStart(pinnedECID: pinnedECID, plan: plan)
+                self.finalizeRestoreStart(plan: plan)
             }
         }
     }
 
-    private func finalizeRestoreStart(pinnedECID: String, plan: RestorePlan) {
+    private func finalizeRestoreStart(plan: RestorePlan) {
         statusText = "Final target check after ERASE confirmation…"
         isScanning = true
         workQueue.async { [weak self] in
             let finalTarget = DeviceDetector.enriched()
             let firmwareCheck = plan.ipsw.map { IPSWValidator.revalidatePinned($0) }
+            let configurator: ConfiguratorDFURestoreInfo?
+            if plan.target.isGenericDFU,
+               case .success(let info) = ConfiguratorDFURestoreProbe.inspect(ecid: plan.target.ecid) {
+                configurator = info
+            } else {
+                configurator = nil
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isScanning = false
-                guard self.sameECID(pinnedECID, finalTarget.ecid),
-                      finalTarget.deviceCount == 1,
-                      (finalTarget.mode == .recovery || finalTarget.mode == .dfu),
-                      finalTarget.hasVerifiedSupportedDeviceIdentity,
-                      finalTarget.supportedDeviceModel == plan.target,
-                      finalTarget.modeVerified else {
+                guard plan.target.matches(finalTarget, configurator: configurator) else {
                     self.destructiveWorkflowActive = false
                     self.apply(finalTarget)
                     self.showAlert(
                         title: "Final target check failed",
-                        message: "The same \(plan.target.identitySummary) was not still present in Recovery/DFU after confirmation. No erase command was started."
+                        message: "The same exact \(plan.target.displayIdentity) restorable target was not present after confirmation. No erase command was started."
                     )
                     return
                 }
@@ -1469,23 +1617,34 @@ final class RecoveryModel: ObservableObject {
                     )
                     return
                 }
-                if let ipsw = plan.ipsw, !ipsw.isCompatible(with: plan.target) {
+                if plan.target.isGenericDFU, plan.ipsw != nil {
+                    self.destructiveWorkflowActive = false
+                    self.showAlert(
+                        title: "Custom IPSW is blocked",
+                        message: "Generic DFU Factory Restore must let Apple Configurator choose the latest compatible signed iOS. No restore command was started."
+                    )
+                    return
+                }
+                if let ipsw = plan.ipsw,
+                   let reviewedModel = plan.target.reviewedModel,
+                   !ipsw.isCompatible(with: reviewedModel) {
                     self.destructiveWorkflowActive = false
                     self.showAlert(
                         title: "Wrong IPSW",
-                        message: "The selected IPSW does not contain the exact customer-erase identity for \(plan.target.productType) / \(plan.target.hardwareModel)."
+                        message: "The selected IPSW does not contain the exact customer-erase identity for \(reviewedModel.productType) / \(reviewedModel.hardwareModel)."
                     )
                     return
                 }
                 self.snapshot = finalTarget
-                let args = AppleCommandBuilder.restore(ecid: pinnedECID, ipsw: plan.ipsw?.url)
+                let args = AppleCommandBuilder.restore(ecid: plan.target.ecid, ipsw: plan.ipsw?.url)
                 self.beginAppleOperation(
                     command: "restore",
                     arguments: args,
-                    expectedECID: pinnedECID,
+                    expectedECID: plan.target.ecid,
                     destructive: true,
                     firmware: plan.ipsw,
-                    expectedModel: plan.target
+                    expectedModel: plan.target.reviewedModel,
+                    expectedPostBootPin: plan.target.postBootPin
                 )
                 self.destructiveWorkflowActive = false
             }
@@ -1500,6 +1659,7 @@ final class RecoveryModel: ObservableObject {
         isMonitoring = false
         monitorIntent = nil
         pendingDFUVerification = nil
+        pendingKISVerification = nil
         if stoppedDFUAssistant {
             dfuAssistantState = .cancelled
         }
@@ -1520,6 +1680,7 @@ final class RecoveryModel: ObservableObject {
         }
 
         pendingDFUVerification = nil
+        pendingKISVerification = nil
         appendLog("DFU Assistant armed a passive exact-target USB watcher for \(masked(ecid)). Physical buttons remain required.")
         startLiveMonitor(
             expectedECID: ecid,
@@ -1547,12 +1708,13 @@ final class RecoveryModel: ObservableObject {
         let targetChanged = DeviceDetector.normalizeECID(snapshot.ecid) !=
             DeviceDetector.normalizeECID(detected.ecid)
         let modelChanged = snapshot.supportedDeviceModel != detected.supportedDeviceModel
+        let requiresAppleLatestFirmware = restoreTarget(for: detected)?.isGenericDFU == true
         let reconciledDFUState = DFUAssistantStatePolicy.reconciled(
             current: dfuAssistantState,
             previous: snapshot,
             detected: detected,
             isMonitoring: isMonitoring,
-            hasPendingVerification: pendingDFUVerification != nil
+            hasPendingVerification: pendingDFUVerification != nil || pendingKISVerification != nil
         )
         if reconciledDFUState != dfuAssistantState {
             dfuAssistantState = reconciledDFUState
@@ -1561,12 +1723,16 @@ final class RecoveryModel: ObservableObject {
         if targetChanged || detected.mode != .normal {
             crashReportSummary = nil
         }
-        if targetChanged || modelChanged {
+        if targetChanged || modelChanged || requiresAppleLatestFirmware {
             firmwareValidationGeneration = UUID()
             isValidatingFirmware = false
             if selectedIPSW != nil {
                 selectedIPSW = nil
-                appendLog("Cleared custom firmware because the exact target identity changed.")
+                appendLog(
+                    requiresAppleLatestFirmware
+                        ? "Cleared custom firmware because generic DFU Factory Restore requires Apple-latest firmware."
+                        : "Cleared custom firmware because the exact target identity changed."
+                )
             }
         }
         snapshot = detected
@@ -1606,12 +1772,19 @@ final class RecoveryModel: ObservableObject {
                 ? "Try Apple Revive first to preserve data. Full Restore is available only with typed erase confirmation."
                 : "Recovery is visible, but this exact hardware identity is not in the reviewed Restore catalog. Revive and Restore remain disabled."
         case .dfu:
-            statusText = detected.modeVerified ? "DFU Mode confirmed" : "DFU USB detected — protocol verification unavailable"
-            detailText = detected.modeVerified && detected.hasVerifiedSupportedDeviceIdentity
-                ? "The display should remain black. Full Restore will erase all data and requires typed confirmation."
-                : detected.modeVerified
-                    ? "DFU protocol is verified, but this exact hardware identity is outside the reviewed Restore catalog. Destructive actions remain disabled."
-                    : "DFU PID is visible, but targeted protocol and ProductType evidence must be verified before any success claim."
+            if let target = DFURestoreTarget(snapshot: detected) {
+                statusText = "Exact iPhone DFU restore target verified"
+                detailText = target.proof == .appleConfiguratorKIS
+                    ? "Apple Configurator attested this exact KIS/DFU target. DFU Factory Restore can erase all data and reinstall Apple's latest signed iOS after two fresh checks and target-bound confirmation."
+                    : "Classic DFU protocol and the complete exact identity agree. DFU Factory Restore can erase all data and reinstall Apple's latest signed iOS after two fresh checks and target-bound confirmation."
+            } else {
+                statusText = detected.modeVerified ? "DFU Mode confirmed" : "DFU USB detected — protocol verification unavailable"
+                detailText = detected.modeVerified && detected.hasVerifiedSupportedDeviceIdentity
+                    ? "The display should remain black. Full Restore will erase all data and requires typed confirmation."
+                    : detected.modeVerified
+                        ? "DFU protocol is verified, but the exact destructive-grade identity is incomplete. Restore remains disabled."
+                        : "DFU PID is visible, but targeted protocol, ProductType, and exact restore evidence must be verified before any success claim."
+            }
         case .restoreOS:
             statusText = "RestoreOS intermediate mode detected"
             detailText = "Apple restore cannot start from this RestoreOS intermediate state. Use the live button guide to reach verified Recovery or DFU first."
@@ -1653,13 +1826,32 @@ final class RecoveryModel: ObservableObject {
             statusText = "DFU Mode verified for the exact iPhone."
             detailText = detected.hasVerifiedSupportedDeviceIdentity
                 ? "USB protocol and the complete reviewed identity tuple agree. Restore remains a separate destructive action with typed confirmation."
-                : "USB protocol, ECID, USB location, and ProductType agree. This model is outside the reviewed Restore catalog, so destructive actions remain disabled."
+                : DFURestoreTarget(snapshot: detected) != nil
+                    ? "Classic DFU protocol and the complete exact identity agree. DFU Factory Restore is available only through Apple-latest firmware, two fresh target checks, and target-bound confirmation."
+                    : "USB protocol, ECID, USB location, and ProductType agree, but destructive-grade identity evidence is incomplete. Restore remains disabled."
             appendLog("DFU Assistant verified classic DFU protocol and exact target identity for \(masked(pin.ecid)).")
         } else {
             dfuAssistantState = .verificationFailed
             statusText = "DFU observation could not be identity-verified."
             detailText = "No DFU success was claimed. Reconnect directly, scan in Normal iOS to capture ProductType, then retry the physical-button assistant. Restore remains disabled."
             appendLog("DFU Assistant rejected the observation because protocol or exact identity verification was incomplete.")
+        }
+    }
+
+    private func completePendingKISVerification(with detected: DeviceSnapshot) {
+        guard let pin = pendingKISVerification else { return }
+        pendingKISVerification = nil
+        if let target = DFURestoreTarget(snapshot: detected),
+           pin.matches(target) {
+            dfuAssistantState = .verified
+            statusText = "Exact KIS/DFU iPhone restore target verified."
+            detailText = "Apple Configurator attested the same ECID, USB location, iPhone ProductType, DFU state, and restorable status. Restore remains a separate destructive action with two fresh checks and target-bound confirmation."
+            appendLog("DFU Assistant verified the exact Apple-restorable KIS target for \(masked(target.ecid)).")
+        } else {
+            dfuAssistantState = .verificationFailed
+            statusText = "KIS observation could not be restore-verified."
+            detailText = "PID 0x1881 alone is not enough. Apple Configurator did not attest the same exact restorable iPhone DFU target, so Restore remains disabled."
+            appendLog("DFU Assistant rejected the KIS observation because exact Configurator restorable-target evidence was incomplete.")
         }
     }
 
@@ -1821,14 +2013,31 @@ final class RecoveryModel: ObservableObject {
                     self.appendLog("DFU Assistant observed stable Recovery for the exact target; monitoring continues because DFU was not verified.")
                 }
             case .observedKISUnverified:
+                timer.cancel()
                 DispatchQueue.main.async {
                     guard self.monitorGeneration == generation, self.isMonitoring,
                           self.monitorIntent == .dfuOnly else { return }
-                    self.dfuAssistantState = .observedKISUnverified
-                    self.statusText = "Newer-device KIS USB observed — DFU is not verified."
-                    self.detailText = "PID 0x1881 is only transport evidence. This build will keep watching and will not enable Restore or claim DFU without an audited verifier."
-                    self.appendLog("Observed exact-target KIS/Debug USB PID 0x1881; no DFU success claim was made.")
+                    self.monitorTimer = nil
+                    self.isMonitoring = false
+                    self.monitorIntent = nil
+                    guard let verificationPin = KISVerificationPin(
+                        ecid: pinned,
+                        locationID: pinnedLocation,
+                        productType: pinnedProductType
+                    ) else {
+                        self.dfuAssistantState = .verificationFailed
+                        self.statusText = "KIS observation could not be identity-pinned."
+                        self.detailText = "The observed ECID, USB location, or ProductType was not safe to pin. Restore remains disabled. Scan again in trusted Normal iOS before retrying."
+                        return
+                    }
+                    self.dfuAssistantState = .verifying
+                    self.pendingKISVerification = verificationPin
+                    self.statusText = "KIS USB observed — verifying the exact target with Apple Configurator…"
+                    self.detailText = "PID 0x1881 is transport evidence only. Restore stays disabled while an exact ECID, USB location, iPhone ProductType, DFU state, and restorable-status scan runs."
+                    self.appendLog("Observed exact-target KIS/Debug USB PID 0x1881; starting read-only Configurator verification.")
+                    self.scan()
                 }
+                return
             case .recoveryOrDFUCandidate(let mode):
                 timer.cancel()
                 DispatchQueue.main.async {
@@ -1939,7 +2148,8 @@ final class RecoveryModel: ObservableObject {
         destructive: Bool,
         expectedUDID: String? = nil,
         firmware: IPSWInfo? = nil,
-        expectedModel: SupportedDeviceModel? = nil
+        expectedModel: SupportedDeviceModel? = nil,
+        expectedPostBootPin: RestorePostBootPin? = nil
     ) {
         operationRunning = true
         isDestructiveOperation = destructive
@@ -1958,6 +2168,19 @@ final class RecoveryModel: ObservableObject {
         expectedOperationCommand = command
         expectedOperationUDID = expectedUDID
         expectedOperationModel = expectedModel
+        if let expectedPostBootPin {
+            expectedOperationPostBootPin = expectedPostBootPin
+        } else if let expectedModel,
+                  command == "restore" || command == "revive" {
+            expectedOperationPostBootPin = RestorePostBootPin(
+                ecid: expectedECID,
+                productType: expectedModel.productType,
+                displayName: expectedModel.marketingName,
+                reviewedModel: expectedModel
+            )
+        } else {
+            expectedOperationPostBootPin = nil
+        }
         if command == "erase" {
             deviceCenterGeneration = UUID()
             isLoadingDeviceCenter = false
@@ -2055,10 +2278,12 @@ final class RecoveryModel: ObservableObject {
         let completedCommand = expectedOperationCommand
         let completedUDID = expectedOperationUDID
         let completedModel = expectedOperationModel
+        let completedPostBootPin = expectedOperationPostBootPin
         expectedOperationECID = nil
         expectedOperationCommand = nil
         expectedOperationUDID = nil
         expectedOperationModel = nil
+        expectedOperationPostBootPin = nil
         isDestructiveOperation = false
 
         if let safeLaunchError {
@@ -2122,17 +2347,16 @@ final class RecoveryModel: ObservableObject {
                 expectedModel: completedModel
             )
         } else {
-            guard let completedModel else {
+            guard let completedPostBootPin else {
                 operationRunning = false
-                statusText = "Apple operation reported success, but the pinned model identity was unavailable."
+                statusText = "Apple operation reported success, but the pinned post-boot identity was unavailable."
                 detailText = "Keep the cable connected and scan again. No operation will be retried automatically."
                 return
             }
             statusText = "Apple operation completed; waiting for the same iPhone to boot…"
             operationStep = completedCommand == "revive" ? "Post-Revive verification" : "Post-Restore verification"
             verifyPostBoot(
-                expectedECID: expected,
-                expectedModel: completedModel,
+                expected: completedPostBootPin,
                 completedCommand: completedCommand
             )
         }
@@ -2209,8 +2433,7 @@ final class RecoveryModel: ObservableObject {
     }
 
     private func verifyPostBoot(
-        expectedECID: String,
-        expectedModel: SupportedDeviceModel,
+        expected: RestorePostBootPin,
         completedCommand: String
     ) {
         workQueue.async { [weak self] in
@@ -2219,19 +2442,15 @@ final class RecoveryModel: ObservableObject {
                 let usb = DeviceDetector.usbOnly()
                 if usb.deviceCount == 1,
                    (usb.mode == .usbUnavailable || usb.mode == .unknown),
-                   DeviceDetector.normalizeECID(usb.ecid) == DeviceDetector.normalizeECID(expectedECID) {
+                   DeviceDetector.normalizeECID(usb.ecid) == DeviceDetector.normalizeECID(expected.ecid) {
                     let enriched = DeviceDetector.enriched()
-                    if enriched.mode == .normal,
-                       enriched.modeVerified,
-                       enriched.hasVerifiedSupportedDeviceIdentity,
-                       enriched.supportedDeviceModel == expectedModel,
-                       enriched.productVersion != nil,
-                       DeviceDetector.normalizeECID(enriched.ecid) == DeviceDetector.normalizeECID(expectedECID) {
+                    if expected.matches(enriched),
+                       enriched.productVersion != nil {
                         DispatchQueue.main.async {
                             guard let self else { return }
                             self.operationRunning = false
                             self.snapshot = enriched
-                            self.statusText = "Success — the same \(expectedModel.marketingName) booted into Normal iOS."
+                            self.statusText = "Success — the same \(expected.displayName) booted into Normal iOS."
                             let version = enriched.productVersion ?? "installed iOS"
                             let build = enriched.buildVersion.map { " (\($0))" } ?? ""
                             if completedCommand == "revive" {
@@ -2451,21 +2670,35 @@ final class RecoveryModel: ObservableObject {
         )
     }
 
-    private func confirmErase(target: DeviceSnapshot, firmware: String) -> Bool {
-        guard let targetModel = target.supportedDeviceModel else { return false }
+    private func confirmErase(target: RestoreOperationTarget, firmware: String) -> Bool {
+        guard let policy = DestructiveRestoreConfirmationPolicy(ecid: target.ecid) else { return false }
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "Permanently erase this \(targetModel.marketingName)?"
-        alert.informativeText = "Target: \(targetModel.identitySummary)\nECID: \(target.displayECID)\nFirmware: \(firmware)\n\nALL DATA AND SETTINGS WILL BE IRREVERSIBLY ERASED. Activation Lock may require the original Apple Account afterward.\n\nType ERASE to continue."
+        alert.messageText = target.isGenericDFU
+            ? "DFU Factory Restore — erase and reinstall iOS on this \(target.displayName)?"
+            : "Permanently erase and restore this \(target.displayName)?"
+        alert.informativeText = "Target: \(target.displayIdentity)\nECID: \(target.ecid)\nFirmware: \(firmware)\n\nALL DATA AND SETTINGS WILL BE PERMANENTLY ERASED, and iOS will be reinstalled. Activation Lock still requires the legitimate Apple Account. Restore may preserve eSIMs, and a supervised device may become unsupervised. The app will send one exact-ECID request and will never retry automatically.\n\nType \(policy.phrase) to continue."
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Erase and Restore")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        field.placeholderString = "Type ERASE"
-        field.setAccessibilityLabel("Type ERASE to confirm permanent erase")
-        field.setAccessibilityHelp("The restore cannot start unless this field contains the exact uppercase word ERASE.")
-        alert.accessoryView = field
+        alert.addButton(withTitle: "Erase & Reinstall")
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 470, height: 62))
+        let dataLoss = NSButton(
+            checkboxWithTitle: "I have a backup, or I accept permanent data loss.",
+            target: nil,
+            action: nil
+        )
+        dataLoss.frame = NSRect(x: 0, y: 36, width: 470, height: 20)
+        let field = NSTextField(frame: NSRect(x: 0, y: 2, width: 320, height: 24))
+        field.placeholderString = policy.phrase
+        field.setAccessibilityLabel("Type \(policy.phrase) to confirm permanent erase and reinstall")
+        field.setAccessibilityHelp("Restore cannot start unless the data-loss acknowledgment is checked and the target-bound phrase is exact.")
+        accessory.addSubview(dataLoss)
+        accessory.addSubview(field)
+        alert.accessoryView = accessory
         let response = alert.runModal()
-        return response == .alertSecondButtonReturn && field.stringValue == "ERASE"
+        return response == .alertSecondButtonReturn && policy.accepts(
+            typedText: field.stringValue,
+            dataLossAcknowledged: dataLoss.state == .on
+        )
     }
 
     private func hasCompetingRestoreClient() -> Bool {

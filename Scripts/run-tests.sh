@@ -41,6 +41,7 @@ test_mains=(
   DeviceCenterTestMain
   SupportFeaturesTestMain
   ModelSafetyTestMain
+  GenericDFURestoreTestMain
   UIContractTestMain
   ToolchainTestMain
   MockLocationTestMain
@@ -82,6 +83,8 @@ if [[ "${YIOS_RUN_VISUALS:-0}" == "1" ]]; then
   "${test_root}/VisualTestMain" "${visual_output_dir}/restoreos-guide-light.png" restoreos-dfu-expanded 1420 880 light top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/recovery-workspace-light.png" recovery 1420 880 light top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/dfu-workspace-dark.png" dfu 1420 880 dark top recovery
+  "${test_root}/VisualTestMain" "${visual_output_dir}/generic-dfu-factory-restore-light.png" generic-dfu 1420 880 light top recovery
+  "${test_root}/VisualTestMain" "${visual_output_dir}/kis-dfu-factory-restore-dark.png" kis-dfu 1420 880 dark top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/post-reset-review-light.png" post-reset-review 1420 880 light top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/operation-running-recovery-light.png" operation-running 1420 880 light top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/operation-failed-activity-light.png" operation-failed 1420 880 light top activity

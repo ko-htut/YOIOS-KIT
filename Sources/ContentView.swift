@@ -972,6 +972,11 @@ struct ContentView: View {
             }
             return "Recovery is confirmed, but this model is outside the reviewed Revive/Restore catalog. Destructive actions remain disabled."
         case .dfu:
+            if model.isGenericDFURestoreTarget {
+                return model.cfgutilAvailable
+                    ? "An exact restorable iPhone DFU target is verified. The DFU Factory Restore below permanently erases it and installs Apple's latest signed iOS."
+                    : "An exact restorable iPhone DFU target is verified. Install Apple Configurator before DFU Factory Restore."
+            }
             if model.snapshot.modeVerified && model.snapshot.hasVerifiedSupportedDeviceIdentity {
                 return model.cfgutilAvailable
                     ? "DFU is confirmed. Review firmware and the destructive Restore path below."
@@ -1047,7 +1052,7 @@ struct ContentView: View {
             }
             .accessibilityIdentifier("dfuAssistantPanel")
 
-            Text("Recovery PID 0x1280–0x1283 is reported as missed DFU timing, not success. Classic DFU PID 0x1227 still requires targeted protocol and identity verification; reviewed Restore eligibility additionally requires the matching ProductType, board, CPID, and BDID tuple. Newer-device KIS PID 0x1881 is shown only as unverified transport evidence and never enables Restore.")
+            Text("Recovery PID 0x1280–0x1283 is reported as missed DFU timing, not success. Classic DFU PID 0x1227 requires targeted protocol and complete identity verification. KIS/Debug USB PID 0x1881 can enable DFU Restore only after exact iPhone target and Apple Configurator restorable-DFU attestation; the PID alone never qualifies.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1077,11 +1082,11 @@ struct ContentView: View {
         UtilityCard(title: "Firmware and recovery", systemImage: "arrow.triangle.2.circlepath") {
             AdaptiveActionRow {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.selectedIPSW?.title ?? "Latest currently signed iOS from Apple")
+                    Text(model.isGenericDFURestoreTarget
+                         ? "Apple latest signed iOS (required)"
+                         : (model.selectedIPSW?.title ?? "Latest currently signed iOS from Apple"))
                         .font(.subheadline.weight(.semibold))
-                    Text(model.selectedIPSW == nil
-                         ? "Apple Configurator downloads the official firmware."
-                         : "BuildManifest exact-target compatibility: \(model.selectedIPSW?.compatibilityDescription ?? "not available") • \(model.selectedIPSW?.url.lastPathComponent ?? "")")
+                    Text(model.restoreFirmwareSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -1134,17 +1139,19 @@ struct ContentView: View {
                         .frame(width: 18)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Erase and reinstall iOS")
+                        Text(model.restoreActionTitle)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.red)
-                        Text("One fully verified supported iPhone in Recovery/DFU only. Close Finder device operations; typed ERASE plus final ECID and model checks are required.")
+                        Text(model.isGenericDFURestoreTarget
+                             ? "One exact restorable iPhone in DFU/KIS only. All data will be permanently erased and Apple's latest signed iOS reinstalled. Activation Lock remains; eSIM may remain."
+                             : "One fully verified reviewed iPhone in Recovery/DFU only. Close Finder device operations; target-bound typed confirmation plus final ECID and model checks are required.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             } trailing: {
-                Button("Erase & Restore…") { model.startRestore() }
+                Button(model.restoreButtonTitle) { model.startRestore() }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .disabled(!model.canRestore)

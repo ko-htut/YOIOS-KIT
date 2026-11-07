@@ -48,6 +48,8 @@ struct DeviceSnapshot: Equatable {
     var usbPowerSinkCapability: Int?
     var identityConflict: Bool = false
     var recoveryIdentityQueryVerified: Bool = false
+    var recoveryIdentityQueryTargetVerified: Bool = false
+    var configuratorDFURestoreVerified: Bool = false
 
     var isSE2: Bool {
         !identityConflict && SupportedDeviceCatalog.isExactSE2(
@@ -165,6 +167,18 @@ struct RecoveryIdentityQueryEvidence: Equatable {
             chipID: chipID,
             boardID: boardID
         )
+    }
+
+    func hasCompleteIPhoneIdentity(for requestedECID: String) -> Bool {
+        guard matches(requestedECID: requestedECID),
+              IPhoneButtonFamily.classify(productType: productType) != nil,
+              let hardwareModel,
+              !hardwareModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let chip = SupportedDeviceCatalog.numericIdentifier(chipID), chip > 0,
+              let board = SupportedDeviceCatalog.numericIdentifier(boardID), board > 0 else {
+            return false
+        }
+        return true
     }
 }
 
@@ -317,10 +331,10 @@ enum DeviceDetector {
             let powerAllocation = integer(in: block, pattern: "\\\"UsbPowerSinkAllocation\\\"\\s*=\\s*([0-9]+)")
             let powerCapability = integer(in: block, pattern: "\\\"UsbPowerSinkCapability\\\"\\s*=\\s*([0-9]+)")
             let product = string(in: block, pattern: "\\\"kUSBProductString\\\"\\s*=\\s*\\\"([^\\\"]+)\\\"") ?? ""
-            // 0x1881 is the KIS/Debug USB transport used by some newer
-            // devices while entering DFU. It is intentionally recognized as
-            // an Apple-mobile target but remains `.unknown`: the classic
-            // libirecovery verifier bundled here cannot attest that transport.
+            // 0x1881 is the KIS/Debug USB transport used by newer DFU devices.
+            // The PID identifies only a provisional DFU transport; mode and
+            // exact identity still require targeted libirecovery/Configurator
+            // evidence before any destructive action is enabled.
             let knownPID = [0x1227, 0x1280, 0x1281, 0x1282, 0x1283, 0x1881, 0x12A8, 0x12A9, 0x12AC].contains(pid ?? -1)
             let looksLikeIPhone = product.localizedCaseInsensitiveContains("iPhone") ||
                 product.localizedCaseInsensitiveContains("Recovery") || ecidDecimal != nil || knownPID
@@ -328,7 +342,7 @@ enum DeviceDetector {
 
             let mode: DeviceMode
             switch pid {
-            case 0x1227: mode = .dfu
+            case 0x1227, 0x1881: mode = .dfu
             case 0x1280, 0x1281, 0x1282, 0x1283: mode = .recovery
             case 0x12AC: mode = .restoreOS
             case 0x12A8, 0x12A9: mode = .usbUnavailable
@@ -531,8 +545,46 @@ enum DeviceDetector {
                         conflict: &snapshot.identityConflict
                     )
                     snapshot.udid = value["UDID"] as? String ?? snapshot.udid
+                    if targetNormalized != nil,
+                       let requestedECID = snapshot.ecid,
+                       let restoreInfo = ConfiguratorDFURestoreProbe.parseRecord(
+                           value,
+                           keyedECID: key,
+                           expectedECID: requestedECID
+                       ) {
+                        let dfuState = restoreInfo.bootedState
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .localizedCaseInsensitiveContains("DFU")
+                        let iPhoneClass = restoreInfo.deviceClass
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .localizedCaseInsensitiveContains("iPhone")
+                        let recognizedTransport = snapshot.usbPID == 0x1227 || snapshot.usbPID == 0x1881
+                        snapshot.configuratorDFURestoreVerified =
+                            recognizedTransport && dfuState && iPhoneClass && restoreInfo.isRestorable &&
+                            restoreInfo.locationID == snapshot.locationID && !snapshot.identityConflict
+                    }
                 }
             }
+        }
+
+        // Newer iPhones can expose KIS/Debug USB (PID 0x1881) on the DFU
+        // restore path. Classic libirecovery cannot attest that transport, so
+        // use one exact-ECID, read-only Apple Configurator query instead.
+        if snapshot.usbPID == 0x1881, ToolPaths.hasConfigurator,
+           let requestedECID = snapshot.ecid,
+           case .success(let restoreInfo) = ConfiguratorDFURestoreProbe.inspect(ecid: requestedECID) {
+            mergeIdentityValue(
+                restoreInfo.productType,
+                current: &snapshot.productType,
+                caseInsensitive: true,
+                conflict: &snapshot.identityConflict
+            )
+            let dfuState = restoreInfo.bootedState.localizedCaseInsensitiveContains("DFU")
+            let iPhoneClass = restoreInfo.deviceClass.localizedCaseInsensitiveContains("iPhone")
+            snapshot.configuratorDFURestoreVerified =
+                dfuState && iPhoneClass && restoreInfo.isRestorable &&
+                restoreInfo.locationID == snapshot.locationID && !snapshot.identityConflict &&
+                DeviceDetector.normalizeECID(restoreInfo.ecid) == DeviceDetector.normalizeECID(requestedECID)
         }
 
         if snapshot.mode == .normal, snapshot.productType == nil,
@@ -572,7 +624,8 @@ enum DeviceDetector {
                 snapshot.mode = .recovery
                 snapshot.modeVerified = true
             }
-            if modeResult.exitCode == 0, modeText == "DFU Mode" {
+            if modeResult.exitCode == 0,
+               modeText == "DFU Mode" || modeText == "DFU Mode via Debug USB (KIS)" {
                 snapshot.mode = .dfu
                 snapshot.modeVerified = true
             }
@@ -606,9 +659,11 @@ enum DeviceDetector {
                 )
                 snapshot.serialNumber = evidence.serialNumber ?? snapshot.serialNumber
                 snapshot.marketingName = evidence.marketingName ?? snapshot.marketingName
+                snapshot.recoveryIdentityQueryTargetVerified =
+                    !snapshot.identityConflict && evidence.hasCompleteIPhoneIdentity(for: requestedECID)
                 if let queriedModel = evidence.exactModel(for: requestedECID) {
                     snapshot.recoveryIdentityQueryVerified =
-                        !snapshot.identityConflict && snapshot.supportedDeviceModel == queriedModel
+                        snapshot.recoveryIdentityQueryTargetVerified && snapshot.supportedDeviceModel == queriedModel
                 }
             }
         }

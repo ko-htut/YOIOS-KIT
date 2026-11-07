@@ -155,6 +155,49 @@ struct DFUAssistantTestMain {
         expect(DFUVerificationPin(ecid: "0", locationID: location, productType: nil) == nil, "zero ECID must not create a DFU verification pin")
         expect(DFUVerificationPin(ecid: ecid, locationID: location, productType: "iPad13,1") == nil, "non-iPhone ProductType must not create a DFU verification pin")
 
+        func makeKISTarget(
+            ecid targetECID: String = ecid,
+            locationID targetLocation: Int = location,
+            productType: String = "iPhone13,1"
+        ) -> DFURestoreTarget? {
+            DFURestoreTarget(snapshot: DeviceSnapshot(
+                mode: .dfu,
+                deviceCount: 1,
+                usbPID: 0x1881,
+                locationID: targetLocation,
+                ecid: targetECID,
+                productType: productType,
+                modeVerified: false,
+                configuratorDFURestoreVerified: true
+            ))
+        }
+        guard let kisVerificationPin = KISVerificationPin(
+            ecid: ecid,
+            locationID: location,
+            productType: "iPhone13,1"
+        ), let exactKISTarget = makeKISTarget() else {
+            fputs("FAIL: valid KIS verification pin or target did not initialize\n", stderr)
+            exit(1)
+        }
+        expect(kisVerificationPin.matches(exactKISTarget), "exact Configurator-attested KIS target must satisfy the raw watcher pin")
+        if let wrongECIDKIS = makeKISTarget(ecid: "0x511EA2E30C02E") {
+            expect(!kisVerificationPin.matches(wrongECIDKIS), "wrong KIS ECID must fail the raw watcher pin")
+        } else {
+            failures.append("wrong-ECID KIS fixture did not initialize")
+        }
+        if let wrongLocationKIS = makeKISTarget(locationID: 2_097_152) {
+            expect(!kisVerificationPin.matches(wrongLocationKIS), "wrong KIS USB location must fail the raw watcher pin")
+        } else {
+            failures.append("wrong-location KIS fixture did not initialize")
+        }
+        if let wrongProductKIS = makeKISTarget(productType: "iPhone15,4") {
+            expect(!kisVerificationPin.matches(wrongProductKIS), "wrong KIS ProductType must fail the raw watcher pin")
+        } else {
+            failures.append("wrong-ProductType KIS fixture did not initialize")
+        }
+        expect(KISVerificationPin(ecid: "0", locationID: location, productType: nil) == nil, "zero ECID must not create a KIS verification pin")
+        expect(KISVerificationPin(ecid: ecid, locationID: location, productType: "iPad13,1") == nil, "non-iPhone ProductType must not create a KIS verification pin")
+
         var sameVerifiedDFU = verifiedUnsupported
         expect(
             DFUAssistantStatePolicy.reconciled(

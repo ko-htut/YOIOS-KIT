@@ -14,6 +14,15 @@ enum AppleCommandBuilder {
         "buildVersion"
     ]
 
+    static let dfuRestoreProperties = [
+        "ECID",
+        "deviceType",
+        "deviceClass",
+        "bootedState",
+        "isRestorable",
+        "locationID"
+    ]
+
     static func revive(ecid: String) -> [String] {
         ["--ecid", ecid, "--format", "JSON", "--progress", "-v", "revive"]
     }
@@ -24,6 +33,10 @@ enum AppleCommandBuilder {
             arguments += ["-I", ipsw.path]
         }
         return arguments
+    }
+
+    static func dfuRestorePreflight(ecid: String) -> [String] {
+        ["--ecid", ecid, "--format", "JSON", "--timeout", "10", "get"] + dfuRestoreProperties
     }
 
     static func factoryResetPreflight(ecid: String) -> [String] {

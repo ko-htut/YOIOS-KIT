@@ -73,6 +73,107 @@ struct ModelSafetyTestMain {
         model.snapshot.mode = .dfu
         expect(model.primaryActionTitle == "DFU verified — restore unsupported", "verified unsupported DFU must not advertise Restore")
 
+        let genericDFUModel = RecoveryModel(
+            autoSelectFirmware: false,
+            mockLocationController: MockLocationController.offlineFixture()
+        )
+        genericDFUModel.snapshot = DeviceSnapshot(
+            mode: .dfu,
+            deviceCount: 1,
+            usbPID: 0x1227,
+            locationID: 1_048_576,
+            ecid: "0x1399A1401402E",
+            productType: "iPhone18,3",
+            hardwareModel: "d93ap",
+            modeVerified: true,
+            chipID: "0x8301",
+            boardID: "0x0A",
+            recoveryIdentityQueryTargetVerified: true
+        )
+        expect(genericDFUModel.isGenericDFURestoreTarget, "complete exact future-iPhone DFU evidence must create only a generic restore target")
+        expect(genericDFUModel.currentSupportedModel == nil, "generic DFU eligibility must not add an unreviewed model to the supported-device catalog")
+        expect(genericDFUModel.canRestore == ToolPaths.hasConfigurator, "generic DFU Restore availability must depend on Apple Configurator")
+        expect(!genericDFUModel.canRevive && !genericDFUModel.canFactoryReset, "generic DFU eligibility must not broaden Revive or Normal Factory Reset")
+        expect(!genericDFUModel.canChooseIPSW, "generic DFU targets must not expose custom IPSW selection")
+        expect(genericDFUModel.restoreButtonTitle == "Erase & Reinstall…", "generic DFU must use honest erase-and-reinstall wording")
+        expect(genericDFUModel.restoreFirmwareSummary.localizedCaseInsensitiveContains("latest signed iOS"), "generic DFU must identify Apple-latest firmware")
+        expect(genericDFUModel.primaryActionTitle == (ToolPaths.hasConfigurator ? "DFU target verified — erase & reinstall below" : "DFU target verified — Apple Configurator required"), "generic DFU primary guidance is incorrect")
+
+        let customFirmware = IPSWInfo(
+            url: URL(fileURLWithPath: "/private/tmp/fixture.ipsw"),
+            productVersion: "99.0",
+            buildVersion: "99A1",
+            compatibleModels: [SupportedDeviceCatalog.se2],
+            fileSize: 1,
+            modificationDate: Date(timeIntervalSince1970: 0),
+            sampledSHA256: "fixture"
+        )
+        genericDFUModel.selectedIPSW = customFirmware
+        expect(!genericDFUModel.canRestore, "a custom or stale IPSW must block generic DFU Restore")
+        genericDFUModel.selectedIPSW = nil
+
+        genericDFUModel.operationRunning = true
+        expect(!genericDFUModel.canRestore, "an active operation must block generic DFU Restore")
+        genericDFUModel.operationRunning = false
+        genericDFUModel.destructiveWorkflowActive = true
+        expect(!genericDFUModel.canRestore, "a destructive workflow must block generic DFU Restore")
+        genericDFUModel.destructiveWorkflowActive = false
+        genericDFUModel.postResetReviewRequired = true
+        expect(!genericDFUModel.canRestore, "post-reset review must block generic DFU Restore")
+        genericDFUModel.postResetReviewRequired = false
+        genericDFUModel.crashCopyReviewRequired = true
+        expect(!genericDFUModel.canRestore, "crash-copy review must block generic DFU Restore")
+        genericDFUModel.crashCopyReviewRequired = false
+        genericDFUModel.isScanning = true
+        expect(!genericDFUModel.canRestore, "USB scanning must block generic DFU Restore")
+        genericDFUModel.isScanning = false
+        genericDFUModel.isMonitoring = true
+        expect(!genericDFUModel.canRestore, "USB monitoring must block generic DFU Restore")
+        genericDFUModel.isMonitoring = false
+        genericDFUModel.isValidatingFirmware = true
+        expect(!genericDFUModel.canRestore, "firmware validation must block generic DFU Restore")
+        genericDFUModel.isValidatingFirmware = false
+        genericDFUModel.isLoadingDeviceCenter = true
+        expect(!genericDFUModel.canRestore, "Device Center collection must block generic DFU Restore")
+        genericDFUModel.isLoadingDeviceCenter = false
+
+        var genericRecovery = genericDFUModel.snapshot
+        genericRecovery.mode = .recovery
+        genericRecovery.usbPID = 0x1281
+        genericDFUModel.snapshot = genericRecovery
+        expect(!genericDFUModel.canRestore && !genericDFUModel.canRevive, "the same unreviewed identity in Recovery must remain ineligible for Restore and Revive")
+        var genericNormal = genericRecovery
+        genericNormal.mode = .normal
+        genericNormal.usbPID = 0x12A8
+        genericNormal.udid = "00008301-0001399A1401402E"
+        genericDFUModel.snapshot = genericNormal
+        expect(!genericDFUModel.canFactoryReset && !genericDFUModel.canRestore && !genericDFUModel.canRevive, "the same unreviewed identity in Normal iOS must not gain destructive eligibility")
+
+        let kisDFUModel = RecoveryModel(
+            autoSelectFirmware: false,
+            mockLocationController: MockLocationController.offlineFixture()
+        )
+        kisDFUModel.snapshot = DeviceSnapshot(
+            mode: .dfu,
+            deviceCount: 1,
+            usbPID: 0x1881,
+            locationID: 1_048_576,
+            ecid: "0x1399A1401402E",
+            productType: "iPhone12,8",
+            hardwareModel: "d79ap",
+            modeVerified: false,
+            chipID: "0x8030",
+            boardID: "0x10",
+            recoveryIdentityQueryVerified: true,
+            configuratorDFURestoreVerified: true
+        )
+        expect(kisDFUModel.currentSupportedModel == SupportedDeviceCatalog.se2, "KIS fixture must exercise a ProductType already present in the reviewed catalog")
+        expect(kisDFUModel.isGenericDFURestoreTarget, "even a known catalog model over KIS must route through exact Configurator generic-DFU proof")
+        expect(kisDFUModel.canRestore == ToolPaths.hasConfigurator, "Configurator-attested KIS Restore availability must match Configurator")
+        expect(!kisDFUModel.canChooseIPSW, "KIS generic restore must block custom IPSW even when ProductType is known to the reviewed catalog")
+        kisDFUModel.snapshot.configuratorDFURestoreVerified = false
+        expect(!kisDFUModel.isGenericDFURestoreTarget && !kisDFUModel.canRestore, "raw KIS PID and ProductType must fail closed without Configurator attestation")
+
         model.snapshot.productType = "iPhone12,8"
         model.snapshot.hardwareModel = "d79ap"
         model.snapshot.chipID = "0x8030"
@@ -118,6 +219,7 @@ struct ModelSafetyTestMain {
 
         model.snapshot.deviceCount = 1
         model.snapshot.mode = .dfu
+        model.snapshot.usbPID = 0x1227
         model.snapshot.recoveryIdentityQueryVerified = true
         expect(model.canRestore == ToolPaths.hasConfigurator, "fully verified SE2 DFU should allow only Restore when Configurator exists")
         expect(!model.canRevive, "DFU must never allow Revive")

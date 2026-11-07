@@ -1,6 +1,6 @@
 # YIOS-KIT — iPhone Device & Recovery Center
 
-A native, Apple-silicon macOS app for source-attributed iPhone inspection and recovery. One exact, trusted iPhone with a valid ProductType can use the non-destructive Normal-iOS-to-Recovery transition, while erase, Revive, Restore, firmware selection, and other write-capable workflows remain bounded to fourteen explicitly reviewed **iPhone 8 through iPhone SE (2nd generation)** ProductType/board variants. The app includes its own pinned libimobiledevice/libirecovery command-line toolchain, so the user does not need Homebrew. Apple Configurator remains an optional, separately installed Apple component for official erase/firmware operations. Mock Location is a separate experimental capability and remains pinned to the SE2 only. No jailbreak, exploit, activation bypass, or unsigned firmware path is included.
+A native, Apple-silicon macOS app for source-attributed iPhone inspection and recovery. One exact, trusted iPhone with a valid ProductType can use the non-destructive Normal-iOS-to-Recovery transition. Factory Reset, Revive, custom-firmware Restore, and the other write-capable workflows remain bounded to fourteen explicitly reviewed **iPhone 8 through iPhone SE (2nd generation)** ProductType/board variants. A separate **DFU Factory Restore** can erase and reinstall Apple's latest signed iOS on an exact iPhone DFU target that the installed Apple Configurator and YIOS-KIT's identity attestation can currently recognize. The app includes its own pinned libimobiledevice/libirecovery command-line toolchain, so the user does not need Homebrew. Apple Configurator remains an optional, separately installed Apple component required for official erase/firmware operations. Mock Location is a separate experimental capability and remains pinned to the SE2 only. No jailbreak, exploit, activation bypass, or unsigned firmware path is included.
 
 ## What the app does
 
@@ -26,7 +26,7 @@ A native, Apple-silicon macOS app for source-attributed iPhone inspection and re
 - Sends at most one exact-UDID Recovery request after two fresh identity and Trust checks; failures and timeouts are never retried automatically.
 - Includes a model-aware **DFU Assistant** for Home-button iPhones, iPhone 7/7 Plus, and iPhone 8-or-later button families. It arms a passive exact-target USB watcher; physical buttons remain required.
 - Offers Apple **Revive** first in verified Recovery Mode.
-- Offers full Apple **Restore** only in verified Recovery/DFU after the user types `ERASE`.
+- Offers full Apple **Restore** for reviewed devices in verified Recovery/DFU, plus model-generic **DFU Factory Restore — Erase & Reinstall iOS** for an exact attested iPhone DFU/KIS target. The generic path always uses Apple's latest signed iOS and requires a data-loss acknowledgement plus the target-bound phrase `ERASE <ECID suffix>`.
 - Offers **Factory Reset — Erase All Content & Settings** only for one paired, exactly identified supported iPhone in Normal iOS.
 - Never retries a failed flash automatically.
 - Attempts to keep the Mac awake during an active Apple operation and prevents normal app quit.
@@ -37,9 +37,9 @@ The app does **not** use 3uTools, jailbreak/exploit tools, activation-lock bypas
 
 The non-destructive software transition into Recovery accepts one exact, trusted Normal-iOS iPhone with a syntactically valid ProductType, canonical ECID, UDID, and stable USB location. It checks the same target and existing Trust twice, sends `ideviceenterrecovery` once with the exact UDID, never uses a shell string, and never retries. This capability is intentionally separate from the destructive catalog.
 
-Inspection, guarded utilities, Factory Reset, Revive, Restore, and firmware selection continue to use the exact ProductType/board allowlist for **iPhone 8, 8 Plus, X, XS, XS Max, XR, 11, 11 Pro, 11 Pro Max, and SE (2nd generation)**, including their Apple hardware variants. iPhone 7/SE (1st generation) and iPhone 12 or later can use broad Recovery entry and model-aware physical guidance but remain outside destructive support. Recovery/DFU writes additionally require a complete matching `irecovery -q` ProductType, DeviceClass, CPID, and BDID attestation.
+Inspection, guarded utilities, Factory Reset, Revive, Recovery-mode Restore, and custom IPSW selection continue to use the exact ProductType/board allowlist for **iPhone 8, 8 Plus, X, XS, XS Max, XR, 11, 11 Pro, 11 Pro Max, and SE (2nd generation)**, including their Apple hardware variants. iPhone 7/SE (1st generation) and iPhone 12 or later can still use broad Recovery entry and model-aware physical guidance. Outside the reviewed catalog, only full DFU Restore is available, only with Apple-latest firmware, and only when two fresh exact-target checks and Apple Configurator's own restorable-DFU record agree.
 
-The DFU Assistant is not one-click DFU: macOS cannot press the required physical buttons. It selects Home-button, iPhone 7, or modern Volume-button guidance from the exact ProductType and watches the pinned ECID/USB location. Stable Recovery is reported as missed DFU timing and monitoring continues. Classic DFU PID `0x1227` must pass targeted protocol and identity verification. Newer-device KIS/Debug USB PID `0x1881` is displayed only as unverified transport evidence; this build does not claim DFU or enable Restore from it.
+The DFU Assistant is not one-click DFU: macOS cannot press the required physical buttons. It selects Home-button, iPhone 7, or modern Volume-button guidance from the exact ProductType and watches the pinned ECID/USB location. Stable Recovery is reported as missed DFU timing and monitoring continues. Classic DFU PID `0x1227` must pass targeted protocol and complete `irecovery -q` identity verification. Newer-device KIS/Debug USB PID `0x1881` can qualify only when an exact ECID, USB location, iPhone ProductType, DFU state, and Apple Configurator `isRestorable` record all agree. Neither PID alone authorizes an erase.
 
 ## Requirements on this Mac
 
@@ -77,9 +77,9 @@ manual backup handoff.
 4. **Copy summary** and **Export report** are redacted by default. **Reveal for 60s** is required before sensitive values appear on screen.
 5. For a usable phone already in verified Normal iOS, guarded **Restart**, **Shut Down**, or **Factory Reset** become available. Factory Reset irreversibly removes all content and settings without reinstalling or updating iOS.
 6. In trusted Normal iOS, choose **Enter Recovery (keep data)** for one exact, twice-checked, single-attempt software transition. If the helper is unavailable or RestoreOS appears, use **Guide me to Recovery** and the model-specific physical sequence.
-7. For DFU, expand the timing guide and choose **Start DFU Assistant**. Follow the physical steps; the assistant only watches and verifies the exact USB target. A black screen, timer, Recovery mode, or PID `0x1881` alone is not DFU success.
+7. For DFU, expand the timing guide and choose **Start DFU Assistant**. Follow the physical steps; the assistant only watches and verifies the exact USB target. A black screen, timer, Recovery mode, or DFU/KIS USB PID alone is not DFU success.
 8. If verified Recovery appears on a reviewed model, try **Apple Revive** first if data matters.
-9. If data does not matter and the exact model is in the reviewed catalog, choose **Erase & Restore**, verify the displayed ECID and firmware, then type the exact uppercase word `ERASE`.
+9. If data does not matter, choose **Erase & Restore** for a reviewed target or **DFU Factory Restore** for an exact generic DFU target. Verify the ECID and firmware, acknowledge permanent data loss, then type the displayed target-bound `ERASE <ECID suffix>` phrase exactly.
 10. Keep the cable connected. After Factory Reset, wait for the Hello screen, then click **I checked the iPhone — Scan**; the app keeps other write actions and normal window closing blocked until this manual check.
 
 ### Mock Location
@@ -118,11 +118,13 @@ The app will never bypass Activation Lock. After restore, the legitimate owner's
 
 **Factory Reset** uses Apple Configurator's targeted `erase` command on one paired, exactly identified supported iPhone that is fully booted in Normal iOS. It irreversibly removes user data and settings, keeps the currently installed iOS build, and does not download firmware. The app omits Configurator's eSIM-erasure option, so cellular eSIMs may remain. It blocks supervised devices because erase would remove supervision. This app cannot reliably verify Find My status, so you must sign out of Find My on the iPhone first. Factory Reset does not bypass Activation Lock and cannot repair a phone stuck in RestoreOS, Recovery, or DFU.
 
-**Full Restore** is the Recovery/DFU path. It erases the phone and installs Apple-signed iOS firmware.
+**Full Restore** is the Recovery/DFU path. It permanently erases the phone and reinstalls Apple-signed iOS firmware; it is not Erase All Content & Settings. It does not bypass Activation Lock, so the legitimate owner's Apple Account may still be required. Apple documents that an eSIM may remain after restore and that a Configurator-supervised phone may become unsupervised.
+
+For reviewed devices, Restore retains the existing exact model/board checks and may use a separately validated compatible IPSW. For devices outside that catalog, **DFU Factory Restore — Erase & Reinstall iOS** is available only when the current Apple Configurator and YIOS-KIT independently attest the same exact iPhone DFU target. That generic path uses one exact-ECID Configurator command, Apple-latest firmware only, and no automatic retry. This is deliberately not a promise that every future iPhone or every KIS transport will qualify.
 
 ## Firmware
 
-The default is the latest signed release obtained by Apple Configurator. You may explicitly choose **Use Configurator cache** to avoid downloading the same firmware again. Cached or manually chosen firmware receives a full ZIP integrity test and an exact target check across `SupportedProductTypes`, consumer `BuildIdentity` DeviceClass, CPID, and BDID. Research identities are ignored for ordinary restores. The validated model, sampled fingerprint, file size, and modification time are pinned and rechecked before the operation; Apple still verifies signing during restore.
+The default is the latest signed release obtained by Apple Configurator. A model-generic DFU Factory Restore always uses that default; Configurator-cache and manually chosen IPSW options stay disabled for it. Reviewed devices may explicitly choose **Use Configurator cache** or a local IPSW. Cached or manually chosen firmware receives a full ZIP integrity test and an exact target check across `SupportedProductTypes`, consumer `BuildIdentity` DeviceClass, CPID, and BDID. Research identities are ignored for ordinary restores. The validated model, sampled fingerprint, file size, and modification time are pinned and rechecked before the operation; Apple still verifies signing during restore.
 
 ## About the earlier error
 

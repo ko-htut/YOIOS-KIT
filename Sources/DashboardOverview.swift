@@ -396,8 +396,8 @@ struct DashboardOverviewView: View {
                 .accessibilityIdentifier("factoryResetButton")
 
                 DashboardActionTile(
-                    title: "Erase & Restore",
-                    subtitle: "Reinstall signed iOS",
+                    title: model.isGenericDFURestoreTarget ? "DFU Factory Restore" : "Erase & Restore",
+                    subtitle: model.isGenericDFURestoreTarget ? "Erase & reinstall signed iOS" : "Reinstall signed iOS",
                     systemImage: "iphone.and.arrow.forward",
                     accent: .orange,
                     action: model.startRestore
