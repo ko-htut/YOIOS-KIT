@@ -4,7 +4,16 @@ import SwiftUI
 private enum VisualScenario: String, CaseIterable {
     case noDevice = "no-device"
     case normal
+    case dashboard
     case devices
+    case reports
+    case history
+    case dfuRestore = "dfu-restore"
+    case moreTools = "more-tools"
+    case guides
+    case logs
+    case guidesMonitoring = "guides-monitoring"
+    case dfuRestoreMonitoring = "dfu-restore-monitoring"
     case restoreOS = "restoreos"
     case restoreOSDFUExpanded = "restoreos-dfu-expanded"
     case recovery
@@ -69,18 +78,7 @@ struct VisualTestMain {
         )
         configure(model, for: scenario)
 
-        let initialDestination: AppSidebarDestination?
-        if scenario == .settings {
-            initialDestination = .settings
-        } else if scenario == .devices {
-            initialDestination = .devices
-        } else if scenario == .operationFailed {
-            initialDestination = .logs
-        } else if scenario == .mockLocationIdle || scenario == .mockLocationReview || scenario == .mockLocationPersistent {
-            initialDestination = .mockLocation
-        } else {
-            initialDestination = nil
-        }
+        let initialDestination = destination(for: scenario)
 
         let root = ContentView(
             model: model,
@@ -143,6 +141,23 @@ struct VisualTestMain {
         return CGFloat(value)
     }
 
+    private static func destination(for scenario: VisualScenario) -> AppSidebarDestination? {
+        switch scenario {
+        case .dashboard: return .dashboard
+        case .devices: return .devices
+        case .reports: return .reports
+        case .history: return .history
+        case .recovery: return .recovery
+        case .dfuRestore, .dfuRestoreMonitoring: return .dfuRestore
+        case .moreTools: return .moreTools
+        case .guides, .guidesMonitoring: return .guides
+        case .logs, .operationFailed: return .logs
+        case .settings: return .settings
+        case .mockLocationIdle, .mockLocationReview, .mockLocationPersistent: return .mockLocation
+        default: return nil
+        }
+    }
+
     private static func configure(_ model: RecoveryModel, for scenario: VisualScenario) {
         model.logText = "[03:20:00] State detection started.\n[03:20:01] Exact target identity pinned.\n[03:20:02] No destructive command has been started.\n"
         model.deviceTimeline = [
@@ -176,12 +191,18 @@ struct VisualTestMain {
         case .noDevice:
             model.snapshot = DeviceSnapshot(mode: .notDetected, deviceCount: 0)
             model.statusText = "No iPhone detected"
-            model.detailText = "Connect one supported iPhone (iPhone 8 through SE 2) directly with a data-capable USB cable, then scan again."
+            model.detailText = "Connect one iPhone directly with a data-capable USB cable, then choose New Scan to read its mode and available actions."
 
-        case .normal, .devices, .normalLogExpanded, .settings:
+        case .normal, .dashboard, .devices, .reports, .history, .moreTools, .guides, .logs, .normalLogExpanded, .settings:
             applyNormalFixture(to: model)
             model.statusText = "Normal iOS mode verified"
             model.detailText = "The supported iPhone is trusted and communicating. Back up first if needed, enter Recovery for repair, or choose Factory Reset below."
+
+        case .guidesMonitoring, .dfuRestoreMonitoring:
+            applyNormalFixture(to: model)
+            model.isMonitoring = true
+            model.statusText = "Watching the connected iPhone for Recovery or DFU"
+            model.detailText = "Follow the physical button sequence. You can stop the USB watcher from any page."
 
         case .mockLocationIdle, .mockLocationReview, .mockLocationPersistent:
             applyNormalFixture(to: model, productType: "iPhone12,8")
@@ -226,7 +247,7 @@ struct VisualTestMain {
             model.statusText = "Recovery Mode verified"
             model.detailText = "The exact supported iPhone is ready. Try Apple Revive first to preserve data, or use Full Restore only if erasing is acceptable."
 
-        case .dfu:
+        case .dfu, .dfuRestore:
             model.snapshot = lowLevelFixture(
                 mode: .dfu,
                 productType: "iPhone10,4",

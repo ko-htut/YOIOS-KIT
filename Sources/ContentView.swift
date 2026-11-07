@@ -68,9 +68,9 @@ enum AppSidebarDestination: String, CaseIterable, Identifiable {
     }
 
     enum SidebarGroup: String, CaseIterable {
-        case main = "MAIN"
-        case tools = "TOOLS"
-        case resources = "RESOURCES"
+        case main = "WORKSPACE"
+        case tools = "DEVICE TOOLS"
+        case resources = "SUPPORT"
     }
 
     static func canonical(for section: AppWorkspaceSection) -> AppSidebarDestination {
@@ -193,8 +193,11 @@ struct ContentView: View {
     }
 
     private var showsGlobalStatusBanner: Bool {
-        (selectedDestination != .dashboard && selectedDestination != .devices && selectedDestination != .mockLocation) ||
-        model.postResetReviewRequired || model.crashCopyReviewRequired
+        if selectedDestination == .dashboard { return false }
+        let requiresGlobalAttention = model.operationRunning || model.postResetReviewRequired || model.crashCopyReviewRequired
+        if selectedDestination == .mockLocation { return requiresGlobalAttention }
+        return selectedDestination == .recovery || selectedDestination == .dfuRestore ||
+            requiresGlobalAttention || (model.lastError != nil && selectedDestination != .logs)
     }
 
     private var allowsWorkspaceMotion: Bool {
@@ -224,16 +227,15 @@ struct ContentView: View {
 
             HStack(spacing: 0) {
                 sidebar
-                    .frame(width: 226)
+                    .frame(width: 208)
 
                 Divider()
 
                 VStack(spacing: 0) {
                     if showsGlobalStatusBanner {
                         statusBanner
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 11)
-                        Divider()
+                            .padding(.horizontal, 24)
+                            .padding(.top, 18)
                     }
 
                     workspaceContent
@@ -257,7 +259,8 @@ struct ContentView: View {
             footer
         }
         .frame(minWidth: 1_040, idealWidth: 1_420, minHeight: 700, idealHeight: 880)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(YIOSTheme.canvas)
+        .tint(YIOSTheme.accent)
         .preferredColorScheme(preferredColorScheme)
         .onChange(of: model.postResetReviewRequired) { required in
             if required { select(.recovery) }
@@ -293,9 +296,9 @@ struct ContentView: View {
             }
         case .devices:
             DeviceCenterOverviewView(model: model)
-        case .recovery, .dfuRestore, .guides:
+        case .recovery, .dfuRestore:
             GeometryReader { geometry in
-                if geometry.size.width >= 820 {
+                if geometry.size.width >= 960 {
                     if rendersFullContent {
                         twoColumnFullContent(width: geometry.size.width)
                     } else {
@@ -305,6 +308,8 @@ struct ContentView: View {
                     stackedBody
                 }
             }
+        case .guides:
+            guidesWorkspace
         case .settings:
             DashboardSettingsView(model: model) {
                 select(.dashboard)
@@ -327,56 +332,61 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .center, spacing: 0) {
+                HStack(spacing: 9) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.blue.opacity(colorScheme == .dark ? 0.18 : 0.09))
-                    Image(systemName: "iphone.gen2.radiowaves.left.and.right")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(.blue)
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(YIOSTheme.accent)
+                    Image(systemName: "iphone.gen2")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(.white)
                 }
-                .frame(width: 40, height: 40)
+                .frame(width: 32, height: 34)
                 .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("YIOS-KIT")
-                        .font(.title2.weight(.semibold))
-                    Text("iOS Recovery & Diagnostic Suite")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                Text("YIOS-KIT")
+                    .font(.system(size: 16, weight: .bold))
+                    .tracking(-0.4)
                 }
+                .frame(width: 184, alignment: .trailing)
+                .padding(.trailing, 24)
 
-                Spacer(minLength: 12)
-
-                Picker("Workspace", selection: $selectedSection) {
-                    ForEach(AppWorkspaceSection.allCases) { section in
-                        Label(section.rawValue, systemImage: section.systemImage)
-                            .tag(section)
+                HStack(spacing: 9) {
+                    Text(selectedDestination.group.rawValue.capitalized)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    Text(selectedDestination.rawValue)
+                        .fontWeight(.medium)
+                    if headerBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel(model.isLoadingDeviceCenter ? "Loading device details" : "Scanning for iPhone")
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 390)
-                .accessibilityIdentifier("workspacePicker")
+                .font(.system(size: 12))
+                .padding(.leading, 24)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("workspaceBreadcrumb")
 
                 Spacer(minLength: 12)
 
-                if headerBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                        .transition(.opacity)
-                        .accessibilityLabel(model.isLoadingDeviceCenter ? "Loading device details" : "Scanning for iPhone")
+                HStack(spacing: 8) {
+                if model.isMonitoring {
+                    Button("Stop watcher") { model.stopMonitoring() }
+                        .controlSize(.large)
+                        .accessibilityIdentifier("stopWatcherButton")
                 }
-
                 Button {
                     cycleAppearance()
                 } label: {
                     Image(systemName: appearanceSymbol)
                         .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .buttonStyle(.plain)
+                .frame(width: 34, height: 34)
+                .background(YIOSTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8))
                 .help("Appearance: \(appearancePreference.capitalized)")
                 .accessibilityLabel(appearanceAccessibilityLabel)
                 .accessibilityIdentifier("appearanceButton")
@@ -387,8 +397,9 @@ struct ContentView: View {
                     Image(systemName: "gearshape")
                         .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .buttonStyle(.plain)
+                .frame(width: 34, height: 34)
+                .background(YIOSTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8))
                 .help("Open settings and system readiness")
                 .accessibilityLabel("Settings")
                 .accessibilityIdentifier("settingsButton")
@@ -396,17 +407,15 @@ struct ContentView: View {
                 Button {
                     model.scan()
                 } label: {
-                    Label("New Scan", systemImage: "arrow.clockwise")
+                    Label(headerBusy ? "Scanning…" : "New Scan", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(YIOSActionButtonStyle())
                 .disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.crashCopyReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter || model.mockLocationController.isBusy)
                 .accessibilityIdentifier("scanButton")
+                }
             }
-            .padding(.leading, 84)
-            .padding(.trailing, 20)
-            .padding(.vertical, 10)
-            .frame(minHeight: 66)
+            .padding(.trailing, 24)
+            .frame(height: 68)
 
             ZStack(alignment: .leading) {
                 Color.clear.frame(height: 2)
@@ -420,7 +429,7 @@ struct ContentView: View {
                 }
             }
         }
-        .background(.regularMaterial)
+        .background(YIOSTheme.surface)
         .animation(YIOSMotion.quick(reduceMotion: reduceMotion), value: headerBusy)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("appHeader")
@@ -429,11 +438,12 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 24) {
                     ForEach(AppSidebarDestination.SidebarGroup.allCases, id: \.self) { group in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(group.rawValue)
-                                .font(.caption2.weight(.semibold))
+                                .font(.system(size: 10, weight: .semibold))
+                                .tracking(1)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 12)
 
@@ -443,13 +453,11 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 16)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 24)
             }
 
-            Divider()
-
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 sidebarReadinessCard
 
                 HStack(spacing: 9) {
@@ -463,22 +471,21 @@ struct ContentView: View {
                     .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Personal workspace")
+                        Text("On this Mac")
                             .font(.caption.weight(.semibold))
-                        Text("Local on this Mac")
+                        Text("Personal workspace")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(10)
-                .yiosCardSurface(cornerRadius: 10, elevated: false)
+                .padding(.horizontal, 6)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("localWorkspaceCard")
             }
             .padding(12)
         }
-        .background(YIOSWorkspaceBackdrop(accent: .blue))
+        .background(YIOSTheme.sidebar)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("appSidebar")
     }
@@ -504,9 +511,9 @@ struct ContentView: View {
             .foregroundStyle(coreReady ? Color.green : Color.orange)
 
             Text(coreReady
-                 ? "Built-in device and recovery inspection tools are available."
-                 : "Open Settings to review missing or incompatible dependencies.")
-                .font(.caption2)
+                 ? "Ready for device inspection."
+                 : "Review tool setup in Settings.")
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -516,7 +523,7 @@ struct ContentView: View {
                 .foregroundStyle(.blue)
                 .accessibilityIdentifier("sidebarReadinessButton")
         }
-        .padding(11)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .yiosCardSurface(accent: coreReady ? .green : .orange, cornerRadius: 10, elevated: false)
         .accessibilityElement(children: .contain)
@@ -525,25 +532,24 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack(spacing: 9) {
-            Text("YIOS-KIT \(appVersionLabel)")
-                .font(.caption.weight(.semibold))
-            Text("•")
-                .foregroundStyle(.tertiary)
+            Text(appVersionLabel)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
             Circle()
                 .fill(footerStatusColor)
                 .frame(width: 6, height: 6)
                 .accessibilityHidden(true)
             Text(footerStatusText)
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 12)
-            Label("Actions require an explicit choice", systemImage: "shield.lefthalf.filled")
-                .font(.caption)
+            Label("Local workspace", systemImage: "lock.shield")
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 20)
-        .frame(height: 42)
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 18)
+        .frame(height: 30)
+        .background(YIOSTheme.surface)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("appFooter")
     }
@@ -697,63 +703,117 @@ struct ContentView: View {
     }
 
     private func twoColumnBody(width: CGFloat) -> some View {
-        let railWidth = min(max(width * 0.34, 300), 320)
-        return HStack(alignment: .top, spacing: 0) {
-            ScrollView {
-                leftRail
-                    .padding(.leading, 20)
-                    .padding(.trailing, 14)
-                    .padding(.vertical, 16)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                recoveryPageHeader
+                HStack(alignment: .top, spacing: 20) {
+                    actionColumn
+                        .accessibilityIdentifier("actionColumn")
+                    leftRail
+                        .frame(width: 264)
+                        .accessibilityIdentifier("identityRail")
+                }
             }
-            .frame(width: railWidth)
-            .accessibilityIdentifier("identityRail")
-
-            Divider()
-
-            ScrollView {
-                actionColumn
-                    .padding(.leading, 16)
-                    .padding(.trailing, 20)
-                    .padding(.vertical, 16)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityIdentifier("actionColumn")
+            .padding(24)
+            .frame(maxWidth: 1_340, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
+        .background(YIOSTheme.canvas)
     }
 
     private func twoColumnFullContent(width: CGFloat) -> some View {
-        let railWidth = min(max(width * 0.34, 300), 320)
-        return HStack(alignment: .top, spacing: 0) {
-            leftRail
-                .padding(.leading, 20)
-                .padding(.trailing, 14)
-                .padding(.vertical, 16)
-                .frame(width: railWidth)
-
-            Divider()
-
-            actionColumn
-                .padding(.leading, 16)
-                .padding(.trailing, 20)
-                .padding(.vertical, 16)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+        VStack(alignment: .leading, spacing: 22) {
+            recoveryPageHeader
+            HStack(alignment: .top, spacing: 20) {
+                actionColumn
+                    .accessibilityIdentifier("actionColumn")
+                leftRail
+                    .frame(width: 264)
+                    .accessibilityIdentifier("identityRail")
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(24)
+        .frame(maxWidth: 1_340, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(YIOSTheme.canvas)
     }
 
     private var stackedBody: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                leftRail
+            VStack(alignment: .leading, spacing: 20) {
+                recoveryPageHeader
                 actionColumn
+                    .accessibilityIdentifier("actionColumn")
+                leftRail
+                    .accessibilityIdentifier("identityRail")
             }
-            .padding(16)
+            .padding(24)
         }
+        .background(YIOSTheme.canvas)
         .accessibilityIdentifier("stackedContent")
     }
 
+    private var recoveryPageHeader: some View {
+        YIOSPageHeader(
+            title: selectedDestination == .dfuRestore ? "DFU & restore" : "Recovery center",
+            subtitle: selectedDestination == .dfuRestore
+                ? "Reinstall iOS or follow the guided steps to reach DFU."
+                : "Choose the next step for your iPhone, with device status close at hand."
+        )
+        .accessibilityIdentifier("workspaceTitle")
+    }
+
+    private var guidesWorkspace: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                YIOSPageHeader(
+                    title: "Guides",
+                    subtitle: "A clear sequence for connection, recovery and restoring your iPhone."
+                )
+                UtilityCard(title: "Before you begin", systemImage: "checklist") {
+                    guideStep(1, "Connect one iPhone directly to this Mac using a data-capable cable.")
+                    guideStep(2, "Unlock the iPhone and accept Trust if the screen is available, then choose New Scan.")
+                    guideStep(3, "Back up anything you want to keep. Try Recovery and Apple Revive before choosing an erase.")
+                }
+                buttonGuide
+                UtilityCard(title: "Choose the right operation", systemImage: "arrow.triangle.branch") {
+                    guideOperation("Recovery", detail: "Starts a firmware-repair session. Entering Recovery alone keeps your data.", symbol: "arrow.clockwise.circle", color: .blue)
+                    Divider()
+                    guideOperation("Apple Revive", detail: "Attempts repair from Recovery while preserving data. Available for a reviewed device identity.", symbol: "heart.text.square", color: .green)
+                    Divider()
+                    guideOperation("Full Restore", detail: "Erases the iPhone and reinstalls signed iOS. Activation Lock can still require the owner's Apple Account.", symbol: "arrow.down.doc", color: .orange)
+                    Divider()
+                    guideOperation("Factory Reset", detail: "Erases content and settings in Normal iOS while keeping the installed iOS version.", symbol: "trash", color: .red)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 1_000, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+        .background(YIOSTheme.canvas)
+        .accessibilityIdentifier("guidesWorkspace")
+    }
+
+    private func guideOperation(_ title: String, detail: String, symbol: String, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 17))
+                .foregroundStyle(color)
+                .frame(width: 25)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
     private var leftRail: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 20) {
             targetIdentityCard
             readinessCard
             logCard
@@ -770,7 +830,8 @@ struct ContentView: View {
                     "Protocol",
                     displaySnapshot.deviceCount == 0
                         ? "—"
-                        : (displaySnapshot.modeVerified ? "Verified" : "USB evidence only")
+                        : (displaySnapshot.configuratorDFURestoreVerified ? "Apple verified" :
+                           (displaySnapshot.modeVerified ? "Verified" : "USB evidence only"))
                 )
                 evidenceRow("Product", displaySnapshot.productType ?? "—")
                 evidenceRow("Hardware", displaySnapshot.hardwareModel ?? "—")
@@ -906,19 +967,20 @@ struct ContentView: View {
     }
 
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            recommendedActionCard
-
-            if showsButtonGuide {
-                buttonGuide
-            }
-
-            if model.snapshot.mode == .normal {
-                factoryResetCard
+        VStack(alignment: .leading, spacing: 20) {
+            if selectedDestination == .dfuRestore {
                 restoreCard
+                if showsButtonGuide { buttonGuide }
             } else {
-                restoreCard
-                factoryResetCard
+                recommendedActionCard
+                if showsButtonGuide { buttonGuide }
+                if model.snapshot.mode == .normal {
+                    factoryResetCard
+                    restoreCard
+                } else {
+                    restoreCard
+                    factoryResetCard
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -936,18 +998,11 @@ struct ContentView: View {
                     Button(model.primaryActionTitle) {
                         model.performPrimaryAction()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(YIOSActionButtonStyle())
                     .controlSize(.large)
                     .disabled(!model.primaryActionEnabled)
                     .accessibilityIdentifier("primaryActionButton")
 
-                    if model.isMonitoring {
-                        Button("Stop watcher") {
-                            model.stopMonitoring()
-                        }
-                        .controlSize(.large)
-                        .accessibilityIdentifier("stopWatcherButton")
-                    }
                 }
             }
         }
@@ -970,7 +1025,7 @@ struct ContentView: View {
                     ? "Try Apple Revive first; it does not automatically fall through to an erase."
                     : "Recovery and the reviewed hardware identity are verified. Install Apple Configurator before Revive or Restore."
             }
-            return "Recovery is confirmed, but this model is outside the reviewed Revive/Restore catalog. Destructive actions remain disabled."
+            return "Recovery is confirmed. Restore is unavailable for this device in Recovery; use the DFU guide for the full restore path."
         case .dfu:
             if model.isGenericDFURestoreTarget {
                 return model.cfgutilAvailable
@@ -982,7 +1037,7 @@ struct ContentView: View {
                     ? "DFU is confirmed. Review firmware and the destructive Restore path below."
                     : "DFU and the reviewed hardware identity are verified. Install Apple Configurator before Restore."
             }
-            return "DFU evidence is visible, but Restore remains unavailable until protocol, exact identity, and the reviewed hardware policy all pass."
+            return "DFU is visible. Scan again to verify the iPhone before starting a restore."
         case .usbUnavailable, .unknown:
             return "Re-scan or start the physical guide; write actions stay disabled until the mode and identity are verified."
         case .notDetected:
@@ -1052,10 +1107,14 @@ struct ContentView: View {
             }
             .accessibilityIdentifier("dfuAssistantPanel")
 
-            Text("Recovery PID 0x1280–0x1283 is reported as missed DFU timing, not success. Classic DFU PID 0x1227 requires targeted protocol and complete identity verification. KIS/Debug USB PID 0x1881 can enable DFU Restore only after exact iPhone target and Apple Configurator restorable-DFU attestation; the PID alone never qualifies.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("How DFU is verified") {
+                Text("Recovery PID 0x1280–0x1283 is reported as missed DFU timing, not success. Classic DFU PID 0x1227 requires targeted protocol and complete identity verification. KIS/Debug USB PID 0x1881 can enable DFU Restore only after exact iPhone target and Apple Configurator restorable-DFU attestation; the PID alone never qualifies.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            }
+            .font(.system(size: 12))
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("physicalButtonGuidePanel")
@@ -1116,9 +1175,9 @@ struct ContentView: View {
                         .frame(width: 18)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Preserve data — Apple Revive")
+                        Text("Apple Revive")
                             .font(.subheadline.weight(.semibold))
-                        Text("Recovery Mode only. Attempts repair without automatically erasing data.")
+                        Text("Repair from Recovery while preserving your data.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1143,8 +1202,8 @@ struct ContentView: View {
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.red)
                         Text(model.isGenericDFURestoreTarget
-                             ? "One exact restorable iPhone in DFU/KIS only. All data will be permanently erased and Apple's latest signed iOS reinstalled. Activation Lock remains; eSIM may remain."
-                             : "One fully verified reviewed iPhone in Recovery/DFU only. Close Finder device operations; target-bound typed confirmation plus final ECID and model checks are required.")
+                             ? "All data will be permanently erased and Apple's latest signed iOS reinstalled. Activation Lock remains; eSIM may remain."
+                             : "Permanently erases the iPhone and reinstalls signed iOS. You will review the device and confirm data loss before starting.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1152,11 +1211,18 @@ struct ContentView: View {
                 }
             } trailing: {
                 Button(model.restoreButtonTitle) { model.startRestore() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .buttonStyle(YIOSActionButtonStyle(tint: .red))
                     .disabled(!model.canRestore)
                     .help("Permanently erases the iPhone and installs official Apple firmware")
                     .accessibilityIdentifier("restoreButton")
+            }
+
+            if !model.canRestore, let reason = restoreUnavailableReason {
+                Label(reason, systemImage: "info.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
             }
         }
         .accessibilityElement(children: .contain)
@@ -1165,7 +1231,7 @@ struct ContentView: View {
 
     private var factoryResetCard: some View {
         UtilityCard(
-            title: "Factory Reset — Erase All Content & Settings",
+            title: "Factory reset",
             systemImage: "trash.fill",
             accent: model.snapshot.mode == .normal ? .red : nil
         ) {
@@ -1189,8 +1255,7 @@ struct ContentView: View {
                 }
             } trailing: {
                 Button("Factory Reset…") { model.startFactoryReset() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .buttonStyle(YIOSActionButtonStyle(tint: .red))
                     .disabled(!model.canFactoryReset)
                     .help("Permanently erases content and settings without reinstalling iOS")
                     .accessibilityIdentifier("factoryResetButton")
@@ -1203,6 +1268,24 @@ struct ContentView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("factoryResetPanel")
+    }
+
+    private var restoreUnavailableReason: String? {
+        if model.snapshot.deviceCount == 0 { return "Connect one iPhone and scan to check restore availability." }
+        if model.snapshot.deviceCount > 1 { return "Disconnect extra devices before continuing." }
+        if model.mockLocationBlocksDeviceMutation { return "Return to real location before starting another operation." }
+        if model.operationRunning || model.destructiveWorkflowActive { return "Wait for the current operation to finish." }
+        if model.isMonitoring { return "Finish or stop the USB watcher before restoring." }
+        if model.postResetReviewRequired || model.crashCopyReviewRequired { return "Complete the pending device review first." }
+        if !model.cfgutilAvailable { return "Install Apple Configurator, then scan again." }
+        if model.snapshot.mode == .normal { return "Enter Recovery or DFU before reinstalling iOS." }
+        if model.snapshot.mode == .recovery && !model.snapshot.hasVerifiedSupportedDeviceIdentity {
+            return "Use the DFU guide to restore this iPhone model."
+        }
+        if model.isScanning || model.isLoadingDeviceCenter || model.isValidatingFirmware {
+            return "Device or firmware checks are in progress."
+        }
+        return "Scan again to verify the device and its restore mode."
     }
 
     private var versionBuild: String {
@@ -1283,18 +1366,19 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(status.component.title)
                     .font(.callout)
-                Text(status.detail)
-                    .font(.caption2)
+                Text(status.sourceSummary)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
-            Text(detail)
-                .font(.caption.weight(.medium))
+            Text(status.version.map { "v\($0)" } ?? (available ? "Ready" : "Setup needed"))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(color)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .help(status.detail + " • " + detail)
         .accessibilityElement(children: .combine)
     }
 }
@@ -1359,7 +1443,7 @@ private struct AdaptiveActionRow<Leading: View, Trailing: View>: View {
 
 private extension View {
     func utilityCardSurface(accent: Color? = nil) -> some View {
-        padding(14)
+        padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
             .yiosCardSurface(accent: accent, cornerRadius: 12)
     }

@@ -229,6 +229,73 @@ struct UIContractTestMain {
         expect(motionRender.bitmapWasCreated, .normal, "Motion-enabled dashboard did not render offscreen")
         motionRender.window.close()
 
+        // Navigation coverage is independent of the state-specific action
+        // contracts above: every visible sidebar destination must construct in
+        // both appearances, including routes that share the same device mode.
+        for destination in AppSidebarDestination.allCases {
+            for scheme in [ColorScheme.light, .dark] {
+                let routeModel = fixture(for: .normal)
+                if destination == .mockLocation {
+                    applyNormalFixture(to: routeModel, supportedModel: SupportedDeviceCatalog.se2)
+                }
+                let routeRender = render(
+                    model: routeModel,
+                    colorScheme: scheme,
+                    initialDestination: destination
+                )
+                expect(routeRender.bitmapWasCreated, .normal, "\(destination.rawValue) did not render in \(scheme) appearance")
+                if usedNativeAccessibility {
+                    let nodes = accessibilityTree(from: routeRender.hostingView)
+                    let sidebarID = "sidebar\(destination.rawValue.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "/", with: ""))Button"
+                    expect(node(sidebarID, in: nodes) != nil, .normal, "\(destination.rawValue) is missing its sidebar navigation control")
+                    expect(node("workspaceBreadcrumb", in: nodes) != nil, .normal, "\(destination.rawValue) is missing the current-page breadcrumb")
+                    let destinationContainer: String
+                    switch destination {
+                    case .dashboard: destinationContainer = "deviceSummaryPanel"
+                    case .devices: destinationContainer = "deviceCenterOverview"
+                    case .reports: destinationContainer = "deviceEvidenceView"
+                    case .history: destinationContainer = "deviceTimelinePanel"
+                    case .recovery, .dfuRestore: destinationContainer = "recoveryPanel"
+                    case .mockLocation: destinationContainer = "mockLocationWorkspace"
+                    case .moreTools: destinationContainer = "backupCenterPanel"
+                    case .guides: destinationContainer = "guidesWorkspace"
+                    case .logs: destinationContainer = "diagnosticLogPanel"
+                    case .settings: destinationContainer = "settingsWorkspace"
+                    }
+                    expect(node(destinationContainer, in: nodes) != nil, .normal, "\(destination.rawValue) is missing its own page content")
+                    if destination == .guides {
+                        expect(node("restoreButton", in: nodes) == nil, .normal, "Guides must not duplicate the destructive Restore action")
+                        expect(node("factoryResetButton", in: nodes) == nil, .normal, "Guides must not duplicate Factory Reset")
+                    } else if destination == .dfuRestore {
+                        expect(node("factoryResetButton", in: nodes) == nil, .normal, "The DFU workspace must not include the Normal-iOS Factory Reset action")
+                    }
+                }
+                routeRender.window.close()
+            }
+        }
+
+        for destination in [AppSidebarDestination.guides, .dfuRestore] {
+            let watchingModel = fixture(for: .normal)
+            watchingModel.isMonitoring = true
+            let watchingRender = render(
+                model: watchingModel,
+                colorScheme: .light,
+                initialDestination: destination
+            )
+            expect(watchingRender.bitmapWasCreated, .normal, "\(destination.rawValue) failed to render with an active USB watcher")
+            if usedNativeAccessibility {
+                let nodes = accessibilityTree(from: watchingRender.hostingView)
+                assertButton(
+                    "stopWatcherButton",
+                    expectedLabel: "Stop watcher",
+                    expectedEnabled: true,
+                    nodes: nodes,
+                    scenario: .normal
+                )
+            }
+            watchingRender.window.close()
+        }
+
         let crashReviewModel = fixture(for: .normal)
         crashReviewModel.crashCopyReviewRequired = true
         crashReviewModel.crashReportSummary = CrashReportCopySummary(
@@ -291,7 +358,7 @@ struct UIContractTestMain {
         case .noDevice:
             model.snapshot = DeviceSnapshot(mode: .notDetected, deviceCount: 0)
             model.statusText = "No iPhone detected"
-            model.detailText = "Connect one supported iPhone (iPhone 8 through SE 2), then scan again."
+            model.detailText = "Connect one iPhone directly with a data-capable USB cable, then choose New Scan."
 
         case .normal:
             applyNormalFixture(to: model)
@@ -652,7 +719,7 @@ struct UIContractTestMain {
         let commonIdentifiers = [
             "appHeader",
             "scanButton",
-            "workspacePicker",
+            "workspaceBreadcrumb",
             "appearanceButton",
             "settingsButton",
             "appSidebar",
@@ -986,8 +1053,11 @@ struct UIContractTestMain {
 
         let identifiers = [
             "scanButton",
+            "stopWatcherButton",
             "statusPanel",
-            "workspacePicker",
+            "workspaceBreadcrumb",
+            "workspaceTitle",
+            "guidesWorkspace",
             "appearanceButton",
             "settingsButton",
             "appSidebar",
@@ -1096,7 +1166,7 @@ struct UIContractTestMain {
         }
 
         let labelBindings = [
-            "Label(\"New Scan\", systemImage: \"arrow.clockwise\")",
+            "Label(headerBusy ? \"Scanning…\" : \"New Scan\", systemImage: \"arrow.clockwise\")",
             "Button(model.primaryActionTitle)",
             "Menu(\"Firmware\")",
             "Button(\"Try Revive\")",

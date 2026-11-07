@@ -4,9 +4,9 @@ A native, Apple-silicon macOS app for source-attributed iPhone inspection and re
 
 ## What the app does
 
-- Uses a dashboard-style native interface with a grouped sidebar, **Overview**, **Recovery**, **Evidence**, and **Activity** workspaces, mode-aware status, Quick Actions, and source-labelled readiness cards.
+- Uses one grouped sidebar for all eleven screens, a current-page breadcrumb, clear page headings, and a shared light/dark visual system. Dashboard, device details, reports, history, Recovery, DFU / Restore, Mock Location, tools, guides, logs, and settings each focus on their own task. Cards and controls adapt to compact and wide windows.
 - Includes a **Dependency Doctor** that reports the exact built-in tool source/version, optional installed fallback, and which capabilities are ready. A complete built-in suite is always preferred; tools from different installations are never mixed within one capability.
-- Adds a **Backup Center** in Activity that hands control to Finder. The app does not automate, start, observe, or claim completion of a backup and never asks for a backup password.
+- Adds a **Backup Center** in More Tools that hands control to Finder. The app does not automate, start, observe, or claim completion of a backup and never asks for a backup password.
 - Adds an explicit, exact-target **Crash & Panic Reports** copy workflow. It requires one supported, trusted iPhone in Normal iOS, creates a new local folder with verified private permissions, always uses `idevicecrashreport --keep`, never requests deletion, never uploads through this app, and never retries automatically.
 - Adds a bounded, structured **USB & Recovery Timeline** for the current app session. It records observed mode/PID transitions and this app's Apple-operation events without scraping iPhone syslog or inferring cable/hardware failure.
 - Adds guarded **Mock Location** for one exact, trusted SE2 running iOS 17.4 or later. It uses a no-root, in-process userspace tunnel and the DVT location service; it never auto-pairs, enables Developer Mode, mounts/downloads a Developer Disk Image, or falls back to a privileged/RemotePairing tunnel.
@@ -72,8 +72,8 @@ manual backup handoff.
 ## Use
 
 1. Double-click the packaged **YIOS-KIT.app**.
-2. Connect only one target iPhone and click **New Scan**. The Overview automatically loads richer details only after Normal iOS, exact model identity, and existing Trust are verified.
-3. Use **Evidence** to see exactly which source supplied each fact. Use **Activity** for Backup Center, an explicit crash-report copy, the redacted USB/recovery timeline, the app log, and the exact last error.
+2. Connect only one target iPhone and click **New Scan**. The Dashboard automatically loads richer details only after Normal iOS, exact model identity, and existing Trust are verified. Open **Devices** for the full snapshot.
+3. Use **Reports** to filter facts and inspect their sources, **History** for the current session's timeline, **More Tools** for Finder backup and crash-report copy, and **Logs** for troubleshooting. **Guides** explains connection and physical-button sequences; **DFU / Restore** puts firmware operations first. Choose System, Light, or Dark appearance in **Settings**.
 4. **Copy summary** and **Export report** are redacted by default. **Reveal for 60s** is required before sensitive values appear on screen.
 5. For a usable phone already in verified Normal iOS, guarded **Restart**, **Shut Down**, or **Factory Reset** become available. Factory Reset irreversibly removes all content and settings without reinstalling or updating iOS.
 6. In trusted Normal iOS, choose **Enter Recovery (keep data)** for one exact, twice-checked, single-attempt software transition. If the helper is unavailable or RestoreOS appears, use **Guide me to Recovery** and the model-specific physical sequence.

@@ -8,6 +8,7 @@ struct MockLocationView: View {
     @State private var longitudeText = ""
     @State private var inputError: String?
     @State private var persistentModeEnabled = false
+    @State private var showsReadinessDetails = false
 
     private struct Preset: Identifiable {
         let id: String
@@ -26,33 +27,39 @@ struct MockLocationView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 20) {
+                    YIOSPageHeader(
+                        title: "Mock Location",
+                        subtitle: "Set a test coordinate on your iPhone and return to real location when finished."
+                    )
                     statusHero
 
-                    if geometry.size.width >= 900 {
-                        HStack(alignment: .top, spacing: 16) {
-                            VStack(alignment: .leading, spacing: 16) {
+                    if geometry.size.width >= 940 {
+                        HStack(alignment: .top, spacing: 20) {
+                            VStack(alignment: .leading, spacing: 20) {
                                 coordinatePanel
                                 safetyPanel
                             }
-                            .frame(minWidth: 500, maxWidth: .infinity, alignment: .topLeading)
+                            .frame(minWidth: 400, maxWidth: .infinity, alignment: .topLeading)
 
-                            VStack(alignment: .leading, spacing: 16) {
-                                targetPanel
+                            VStack(alignment: .leading, spacing: 20) {
                                 readinessPanel
+                                targetPanel
                             }
-                            .frame(width: 330, alignment: .topLeading)
+                            .frame(width: 310, alignment: .topLeading)
                         }
                     } else {
-                        VStack(alignment: .leading, spacing: 16) {
-                            targetPanel
-                            coordinatePanel
+                        VStack(alignment: .leading, spacing: 20) {
                             readinessPanel
+                            coordinatePanel
+                            targetPanel
                             safetyPanel
                         }
                     }
                 }
-                .padding(20)
+                .frame(maxWidth: 1_260, alignment: .topLeading)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
             .scrollIndicators(.hidden)
         }
@@ -61,27 +68,29 @@ struct MockLocationView: View {
         .onAppear {
             if controller.isAssumedPersistent { persistentModeEnabled = true }
             controller.refreshLocalState()
+            if controller.shouldOfferDeveloperModeOptionRequest { showsReadinessDetails = true }
         }
         .onChange(of: model.snapshot) { _ in controller.refreshLocalState() }
         .onChange(of: controller.isAssumedPersistent) { isPersistent in
             persistentModeEnabled = isPersistent
         }
+        .onChange(of: controller.shouldOfferDeveloperModeOptionRequest) { shouldOffer in
+            if shouldOffer { showsReadinessDetails = true }
+        }
     }
 
     private var statusHero: some View {
-        HStack(alignment: .top, spacing: 15) {
-            ZStack {
-                Circle().fill(statusColor.opacity(0.12))
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 14) {
                 Image(systemName: statusSymbol)
-                    .font(.system(size: 27, weight: .semibold))
+                    .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(statusColor)
-            }
-            .frame(width: 58, height: 58)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 7) {
+                    .frame(width: 42, height: 42)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(statusColor.opacity(0.08)))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 7) {
                 Text(controller.statusText)
-                    .font(.title3.weight(.semibold))
+                    .font(.headline)
                 Text(controller.detailText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -104,50 +113,41 @@ struct MockLocationView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-
-            Spacer(minLength: 12)
-
-            VStack(alignment: .trailing, spacing: 6) {
-                Text("CONNECTED \(controller.connectedTargetToken ?? "NO TARGET")")
-                    .font(.system(.caption, design: .monospaced).weight(.semibold))
-                    .foregroundStyle(statusColor)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("Connected: \(controller.connectedTargetToken ?? "No target")")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
                 if let recorded = controller.recordedTargetToken,
                    recorded != controller.connectedTargetToken {
-                    Text("RECORDED \(recorded)")
-                        .font(.system(.caption2, design: .monospaced).weight(.medium))
+                    Text("Saved: \(recorded)")
+                        .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 0)
                 Text(statusBadge)
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(statusColor)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(statusColor.opacity(0.10)))
             }
         }
-        .padding(18)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(statusColor.opacity(0.045))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(statusColor.opacity(0.24), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 3)
+        .yiosCardSurface(elevated: false)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mockLocationStatusPanel")
     }
 
     private var coordinatePanel: some View {
         MockLocationPanel(
-            title: "Static coordinate",
+            title: "Choose a test location",
             systemImage: "mappin.and.ellipse",
             accent: .blue
         ) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Enter one finite WGS-84 latitude/longitude pair. Coordinates are sent to the iPhone but are never written to the crash-safety journal.")
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Enter latitude and longitude, or choose a city preset. Coordinates are sent to the iPhone and are not saved in the local safety record.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -183,39 +183,50 @@ struct MockLocationView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Persistent until Clear/Reboot (Experimental)")
                             .font(.callout.weight(.semibold))
-                        Text("After Apple's Set acknowledgement, close the developer session without Clear. It is designed to survive a cable disconnect, but there is no read-back getter and this iOS build must be verified manually.")
+                        Text("The test location may stay active after USB is disconnected. Check the result on your iPhone; persistence is experimental and cannot be verified automatically. Reconnect this iPhone to return to real location.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .toggleStyle(.switch)
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
                 .disabled(controller.isBusy || controller.isAssumedActive || controller.reviewRequired)
                 .accessibilityIdentifier("mockLocationPersistentModeToggle")
 
-                HStack(spacing: 10) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
                     Menu("Presets") {
                         ForEach(presets) { preset in
                             Button(preset.title) { apply(preset) }
                         }
                     }
                     .accessibilityIdentifier("mockLocationPresetMenu")
-
-                    Button("Check Readiness") { controller.checkReadiness() }
-                        .disabled(!controller.canCheckReadiness)
-                        .accessibilityIdentifier("mockLocationCheckReadinessButton")
-
                     Spacer(minLength: 0)
-
                     Button(setButtonTitle) { prepareSetConfirmation() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(YIOSActionButtonStyle())
                         .disabled(!controller.canSetLocation)
                         .accessibilityIdentifier("mockLocationSetButton")
+                    }
+                    VStack(alignment: .leading, spacing: 12) {
+                        Menu("Presets") {
+                            ForEach(presets) { preset in
+                                Button(preset.title) { apply(preset) }
+                            }
+                        }
+                        .accessibilityIdentifier("mockLocationPresetMenu")
+                        Button(setButtonTitle) { prepareSetConfirmation() }
+                            .buttonStyle(YIOSActionButtonStyle())
+                            .disabled(!controller.canSetLocation)
+                            .accessibilityIdentifier("mockLocationSetButton")
+                    }
                 }
+                .controlSize(.large)
 
                 Divider()
 
-                HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Return to Real Location")
                             .font(.callout.weight(.semibold))
@@ -223,7 +234,6 @@ struct MockLocationView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: 8)
                     Button("Return to Real Location") { controller.returnToRealLocation() }
                         .disabled(!controller.canReturnToRealLocation)
                         .accessibilityIdentifier("mockLocationClearButton")
@@ -242,8 +252,7 @@ struct MockLocationView: View {
                         Button("Forget Unavailable iPhone Record") {
                             model.forgetUnavailableMockLocationRecord()
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                        .buttonStyle(YIOSActionButtonStyle(tint: .red))
                         .disabled(!controller.canForgetUnavailableRecord)
                         .accessibilityIdentifier("mockLocationForgetUnavailableRecordButton")
                     }
@@ -271,7 +280,7 @@ struct MockLocationView: View {
                 .accessibilityIdentifier(identifier)
                 .onChange(of: text.wrappedValue) { _ in inputError = nil }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
     }
 
     private var targetPanel: some View {
@@ -299,8 +308,21 @@ struct MockLocationView: View {
     }
 
     private var readinessPanel: some View {
-        MockLocationPanel(title: "Readiness evidence", systemImage: "checkmark.shield", accent: readinessColor) {
-            VStack(spacing: 0) {
+        MockLocationPanel(title: "Before you start", systemImage: "checkmark.shield", accent: readinessColor) {
+            Text(developerChecksReady
+                 ? "The developer connection is ready. Enter your coordinate to continue."
+                 : "Connect and unlock your iPhone, accept Trust, then check the developer connection.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Check Readiness") { controller.checkReadiness() }
+                .buttonStyle(YIOSActionButtonStyle())
+                .controlSize(.large)
+                .disabled(!controller.canCheckReadiness)
+                .accessibilityIdentifier("mockLocationCheckReadinessButton")
+
+            DisclosureGroup("Connection checks", isExpanded: $showsReadinessDetails) {
+                VStack(spacing: 0) {
                 readinessRow(
                     title: "Exact Normal-iOS SE2",
                     detail: identityMatchText,
@@ -359,28 +381,42 @@ struct MockLocationView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 9)
                 }
+
+                }
+                .padding(.top, 8)
             }
+            .font(.callout)
         }
         .accessibilityIdentifier("mockLocationReadinessPanel")
     }
 
     private var safetyPanel: some View {
-        MockLocationPanel(title: "Safety contract", systemImage: "shield.lefthalf.filled", accent: .orange) {
-            VStack(alignment: .leading, spacing: 9) {
+        MockLocationPanel(title: "Using test locations", systemImage: "info.circle", accent: .blue) {
+            Text("A simulated location can affect Maps, navigation, location sharing and other apps. Use Return to Real Location when you finish.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("How sessions and safety records work") {
+                VStack(alignment: .leading, spacing: 10) {
                 safetyLine("The Set action is always pinned to one verified UDID/product and is rechecked immediately before launch.")
                 safetyLine("Simulation is reported as assumed active because the developer service has no getter.")
                 safetyLine("Experimental persistence is recorded only after Set returns and the backend exits cleanly without sending Clear; it is never described as verified or permanent.")
                 safetyLine("Recovery, Restore, Factory Reset, power controls, and other device mutations must remain blocked while simulation is active or uncertain.")
                 safetyLine("The journal stores only a one-way target fingerprint and state timestamps—never coordinates or raw device identifiers.")
+                }
+                .padding(.top, 12)
             }
+            .font(.callout)
         }
         .accessibilityIdentifier("mockLocationSafetyPanel")
     }
 
     private func safetyLine(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.orange)
+            Image(systemName: "circle.fill")
+                .font(.system(size: 4))
+                .foregroundStyle(.secondary)
+                .padding(.top, 5)
                 .accessibilityHidden(true)
             Text(text)
                 .font(.caption)
@@ -486,15 +522,15 @@ struct MockLocationView: View {
                 .frame(width: 17)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.caption.weight(.medium))
+                Text(title).font(.callout.weight(.medium))
                 Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(rowColor(state))
+                    .font(.caption)
+                    .foregroundStyle(state == .warning ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .accessibilityElement(children: .combine)
     }
 
@@ -594,11 +630,11 @@ private struct MockLocationPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             YIOSPanelHeader(title, systemImage: systemImage, accent: accent)
             content
         }
-        .padding(15)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .yiosCardSurface(accent: accent, cornerRadius: 13)
     }
@@ -616,7 +652,7 @@ private struct MockLocationFactRow: View {
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(value)
-                .font(monospaced ? .system(.caption, design: .monospaced) : .caption)
+                .font(monospaced ? .system(.callout, design: .monospaced) : .callout)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
         }

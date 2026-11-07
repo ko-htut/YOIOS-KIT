@@ -49,6 +49,17 @@ test_mains=(
   DFUAssistantTestMain
 )
 
+if [[ -n "${YIOS_TEST_FILTER:-}" ]]; then
+  requested_tests=("${(@s:,:)YIOS_TEST_FILTER}")
+  for test_name in "${requested_tests[@]}"; do
+    if (( ${test_mains[(Ie)$test_name]} == 0 )); then
+      print -u2 -- "Unknown test name: ${test_name}"
+      exit 64
+    fi
+  done
+  test_mains=("${requested_tests[@]}")
+fi
+
 for test_name in "${test_mains[@]}"; do
   print -- "Running ${test_name}"
   DEVELOPER_DIR="$developer_dir" /usr/bin/xcrun swiftc \
@@ -97,6 +108,16 @@ if [[ "${YIOS_RUN_VISUALS:-0}" == "1" ]]; then
   "${test_root}/VisualTestMain" "${visual_output_dir}/multiple-device-recovery-light.png" multiple 1040 700 light top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/usb-unavailable-recovery-dark.png" usb-unavailable 1040 700 dark top recovery
   "${test_root}/VisualTestMain" "${visual_output_dir}/normal-log-expanded-light.png" normal-log-expanded 1420 1300 light full recovery
+
+  # Every sidebar destination receives an explicit wide/light and compact/dark
+  # screenshot. State-specific captures above remain separate from navigation
+  # coverage so a route cannot silently reuse another destination's content.
+  for page_scenario in dashboard devices reports history recovery dfu-restore mock-location-idle more-tools guides logs settings; do
+    "${test_root}/VisualTestMain" "${visual_output_dir}/screen-${page_scenario}-wide-light.png" "$page_scenario" 1420 880 light top
+    "${test_root}/VisualTestMain" "${visual_output_dir}/screen-${page_scenario}-compact-dark.png" "$page_scenario" 1040 820 dark top
+  done
+  "${test_root}/VisualTestMain" "${visual_output_dir}/guides-monitoring-compact-light.png" guides-monitoring 1040 820 light top
+  "${test_root}/VisualTestMain" "${visual_output_dir}/dfu-restore-monitoring-wide-dark.png" dfu-restore-monitoring 1420 880 dark top
   print -- "Visual snapshots: ${visual_output_dir}"
 fi
 

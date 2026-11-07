@@ -21,15 +21,21 @@ struct DashboardOverviewView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                Group {
-                    if geometry.size.width >= 1_040 {
-                        wideDashboard
-                    } else {
-                        compactDashboard
+                VStack(alignment: .leading, spacing: 22) {
+                    YIOSPageHeader(
+                        title: "Dashboard",
+                        subtitle: "Your connected iPhone, current status, and available actions."
+                    )
+                    Group {
+                        if geometry.size.width >= 1_020 {
+                            wideDashboard
+                        } else {
+                            compactDashboard
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(18)
+                .padding(24)
             }
             .scrollIndicators(.hidden)
         }
@@ -44,76 +50,53 @@ struct DashboardOverviewView: View {
     }
 
     private var wideDashboard: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 16) {
-                statusHero
-                deviceSummaryCard
-                quickActionsSection
-                systemReadinessSection
-            }
-            .frame(minWidth: 650, maxWidth: .infinity, alignment: .topLeading)
-
-            VStack(alignment: .leading, spacing: 16) {
-                connectionEvidenceCard
-                batteryCard
-                storageCard
-            }
-            .frame(width: 296)
-        }
-        .frame(minWidth: 960, maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var compactDashboard: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 20) {
             statusHero
-            deviceSummaryCard
-            quickActionsSection
-            systemReadinessSection
+            HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 20) {
+                    deviceSummaryCard
+                    quickActionsSection
+                }
+                .frame(minWidth: 590, maxWidth: .infinity, alignment: .topLeading)
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 20) {
                     connectionEvidenceCard
                     batteryCard
                     storageCard
                 }
-                VStack(alignment: .leading, spacing: 14) {
-                    connectionEvidenceCard
-                    HStack(alignment: .top, spacing: 14) {
-                        batteryCard
-                        storageCard
-                    }
-                }
+                .frame(width: 286)
+            }
+            systemReadinessSection
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var compactDashboard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            statusHero
+            deviceSummaryCard
+            quickActionsSection
+            systemReadinessSection
+            connectionEvidenceCard
+            HStack(alignment: .top, spacing: 20) {
+                batteryCard
+                storageCard
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var statusHero: some View {
-        ZStack(alignment: .trailing) {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [heroAccent.opacity(colorScheme == .dark ? 0.18 : 0.08), Color.blue.opacity(colorScheme == .dark ? 0.08 : 0.025)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            dashboardPhoneDecoration
-                .padding(.trailing, 22)
-                .opacity(model.snapshot.deviceCount == 0 ? 0.42 : 0.88)
-
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
                 ZStack {
-                    Circle()
-                        .fill(heroAccent.opacity(colorScheme == .dark ? 0.22 : 0.11))
-                    Circle()
-                        .stroke(heroAccent.opacity(0.16), lineWidth: 8)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(heroAccent.opacity(colorScheme == .dark ? 0.16 : 0.09))
                     Image(systemName: heroSymbol)
-                        .font(.system(size: 27, weight: .semibold))
+                        .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(heroAccent)
                 }
-                .frame(width: 58, height: 58)
+                .frame(width: 48, height: 48)
                 .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 7) {
@@ -124,7 +107,7 @@ struct DashboardOverviewView: View {
                     }
 
                     Text(model.statusText)
-                        .font(.title3.weight(.semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
 
                     Text(model.detailText)
@@ -155,74 +138,64 @@ struct DashboardOverviewView: View {
                             .frame(maxWidth: 540, alignment: .leading)
                     }
 
-                    Text(heroBadgeText)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(heroAccent)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(heroAccent.opacity(colorScheme == .dark ? 0.20 : 0.09)))
                 }
-                .padding(.trailing, 160)
-
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 20) {
+                    heroObservation
+                    Spacer(minLength: 12)
+                    heroPrimaryAction
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    heroObservation
+                    heroPrimaryAction
+                }
+            }
         }
-        .frame(minHeight: 156)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(heroAccent.opacity(0.25), lineWidth: 1)
-        )
-        .shadow(
-            color: Color.black.opacity(colorScheme == .dark ? 0.18 : 0.06),
-            radius: 12,
-            x: 0,
-            y: 4
-        )
+        .padding(20)
+        .yiosCardSurface(cornerRadius: 14, elevated: false)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("deviceCenterDetailStatus")
     }
 
-    private var dashboardPhoneDecoration: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.blue.opacity(0.50), lineWidth: 5)
-                .frame(width: 100, height: 164)
-                .rotationEffect(.degrees(7))
-            Circle()
-                .fill(Color.blue)
-                .frame(width: 42, height: 42)
-                .overlay(
-                    Image(systemName: heroSymbol)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(.white)
-                )
+    private var heroObservation: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Circle().fill(heroAccent).frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text(heroBadgeText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text(lastUpdatedText)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
         }
-        .accessibilityHidden(true)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var heroPrimaryAction: some View {
+        Button(dashboardPrimaryTitle) { model.performPrimaryAction() }
+            .buttonStyle(YIOSActionButtonStyle())
+            .disabled(!dashboardPrimaryEnabled)
+            .accessibilityIdentifier("primaryActionButton")
     }
 
     private var deviceSummaryCard: some View {
         DashboardPanel(title: "Device Summary", systemImage: "iphone.gen2") {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 18) {
-                    compactDeviceHero
-                        .frame(width: 180)
-                    Divider()
-                    summaryFactsGrid
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top, spacing: 16) {
-                        compactDeviceHero
-                            .frame(width: 165)
-                        Divider()
-                        summaryFactsGrid
-                    }
-                }
-            }
-
+            compactDeviceHero
             Divider()
-
+            if model.snapshot.deviceCount == 0 {
+                Text("Connect an iPhone with a data-capable USB cable, then choose Scan. Device details will appear here after detection.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 4)
+            } else {
+                summaryFactsGrid
+            }
+            Divider()
             deviceUtilityToolbar
         }
         .accessibilityElement(children: .contain)
@@ -230,49 +203,36 @@ struct DashboardOverviewView: View {
     }
 
     private var compactDeviceHero: some View {
-        VStack(spacing: 9) {
+        HStack(spacing: 14) {
             ZStack {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.62), lineWidth: 4)
-                    .frame(width: 78, height: 134)
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.secondary.opacity(0.32))
-                    .frame(width: 24, height: 4)
-                    .offset(y: -57)
-                Circle()
-                    .fill(heroAccent)
-                    .frame(width: 36, height: 36)
-                    .overlay(
-                        Image(systemName: heroSymbol)
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
-                    )
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.blue.opacity(0.08))
+                Image(systemName: model.snapshot.deviceCount == 0 ? "iphone.slash" : "iphone")
+                    .font(.system(size: 25, weight: .regular))
+                    .foregroundStyle(.blue)
             }
+            .frame(width: 50, height: 58)
             .accessibilityHidden(true)
-
-            Text(modelName)
-                .font(.headline)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(lastUpdatedText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Label(connectionLabel, systemImage: model.snapshot.deviceCount == 1 ? "cable.connector" : "iphone.slash")
-                .font(.caption)
-                .foregroundStyle(model.snapshot.deviceCount == 1 ? Color.green : Color.secondary)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(modelName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Label(connectionLabel, systemImage: model.snapshot.deviceCount == 1 ? "cable.connector" : "iphone.slash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("deviceHeroPanel")
     }
 
     private var summaryFactsGrid: some View {
         LazyVGrid(
-            columns: [GridItem(.flexible(minimum: 190), spacing: 12), GridItem(.flexible(minimum: 190), spacing: 12)],
+            columns: [GridItem(.adaptive(minimum: 170), spacing: 18)],
             alignment: .leading,
-            spacing: 0
+            spacing: 14
         ) {
             summaryFact("productType", fallbackLabel: "Product Type", icon: "iphone")
             summaryFact("ecid", fallbackLabel: "ECID", icon: "tag")
@@ -292,36 +252,30 @@ struct DashboardOverviewView: View {
 
     private func summaryFact(_ id: String, fallbackLabel: String, icon: String) -> some View {
         let fact = details.fact(id)
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: icon)
-                .foregroundStyle(.blue)
-                .frame(width: 18)
-                .accessibilityHidden(true)
-            Text(fact?.label ?? fallbackLabel)
-                .font(.caption)
+        return VStack(alignment: .leading, spacing: 5) {
+            Label(fact?.label ?? fallbackLabel, systemImage: icon)
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            Spacer(minLength: 6)
             Text(fact?.displayValue(revealSensitive: revealsSensitiveValues) ?? "—")
-                .font((fact?.sensitivity ?? DeviceFactSensitivity.none) == DeviceFactSensitivity.none ? .callout : .system(.caption, design: .monospaced))
+                .font(.system(size: 13, weight: .medium, design: (fact?.sensitivity ?? DeviceFactSensitivity.none) == DeviceFactSensitivity.none ? .default : .monospaced))
                 .textSelection(.enabled)
-                .multilineTextAlignment(.trailing)
                 .lineLimit(2)
         }
-        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
         .help(fact.map { "\($0.status.title) • \($0.source) — \($0.explanation)" } ?? "Unavailable in this mode or Trust state")
         .accessibilityElement(children: .combine)
     }
 
     private var deviceUtilityToolbar: some View {
         LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 136, maximum: 210), spacing: 8)],
+            columns: [GridItem(.adaptive(minimum: 130), spacing: 8)],
             alignment: .leading,
             spacing: 8
         ) {
             utilityButtons
         }
-        .controlSize(.small)
+        .controlSize(.regular)
     }
 
     @ViewBuilder
@@ -367,49 +321,16 @@ struct DashboardOverviewView: View {
     }
 
     private var quickActionsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Quick Actions")
-                .font(.title3.weight(.semibold))
-
+        DashboardPanel(title: "Quick Actions", systemImage: "bolt") {
             LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(minimum: 112), spacing: 10), count: 5),
+                columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                 spacing: 10
             ) {
-                DashboardActionTile(
-                    title: dashboardPrimaryTitle,
-                    subtitle: primaryActionSubtitle,
-                    systemImage: "arrow.clockwise",
-                    accent: .blue,
-                    action: model.performPrimaryAction
-                )
-                .disabled(!dashboardPrimaryEnabled)
-                .accessibilityIdentifier("primaryActionButton")
-
-                DashboardActionTile(
-                    title: "Factory Reset",
-                    subtitle: "Erase content & settings",
-                    systemImage: "trash",
-                    accent: .purple,
-                    action: model.startFactoryReset
-                )
-                .disabled(!model.canFactoryReset)
-                .accessibilityIdentifier("factoryResetButton")
-
-                DashboardActionTile(
-                    title: model.isGenericDFURestoreTarget ? "DFU Factory Restore" : "Erase & Restore",
-                    subtitle: model.isGenericDFURestoreTarget ? "Erase & reinstall signed iOS" : "Reinstall signed iOS",
-                    systemImage: "iphone.and.arrow.forward",
-                    accent: .orange,
-                    action: model.startRestore
-                )
-                .disabled(!model.canRestore)
-                .accessibilityIdentifier("restoreButton")
-
                 DashboardActionTile(
                     title: "Try Revive",
                     subtitle: "Preserve data when possible",
                     systemImage: "waveform.path.ecg",
-                    accent: .green,
+                    accent: .blue,
                     action: model.performPrimaryAction
                 )
                 .disabled(!model.canRevive)
@@ -419,10 +340,49 @@ struct DashboardOverviewView: View {
                     title: "More Tools",
                     subtitle: "Reports, backup & timeline",
                     systemImage: "square.grid.2x2",
-                    accent: .indigo,
+                    accent: .blue,
                     action: openMoreTools
                 )
                 .accessibilityIdentifier("moreToolsButton")
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text("Erase actions")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("Confirmation required")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
+                DashboardActionTile(
+                    title: "Factory Reset",
+                    subtitle: "Erase content & settings",
+                    systemImage: "trash",
+                    accent: .red,
+                    compact: true,
+                    action: model.startFactoryReset
+                )
+                .disabled(!model.canFactoryReset)
+                .accessibilityIdentifier("factoryResetButton")
+
+                DashboardActionTile(
+                    title: model.isGenericDFURestoreTarget ? "DFU Factory Restore" : "Erase & Restore",
+                    subtitle: model.isGenericDFURestoreTarget ? "Erase & reinstall signed iOS" : "Reinstall signed iOS",
+                    systemImage: "iphone.and.arrow.forward",
+                    accent: .red,
+                    compact: true,
+                    action: model.startRestore
+                )
+                .disabled(!model.canRestore)
+                .accessibilityIdentifier("restoreButton")
             }
         }
         .accessibilityElement(children: .contain)
@@ -430,13 +390,10 @@ struct DashboardOverviewView: View {
     }
 
     private var systemReadinessSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("System Readiness")
-                .font(.title3.weight(.semibold))
-
+        DashboardPanel(title: "System Readiness", systemImage: "checkmark.shield") {
             LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(minimum: 115), spacing: 9), count: 5),
-                spacing: 9
+                columns: [GridItem(.adaptive(minimum: 165), spacing: 12)],
+                spacing: 12
             ) {
                 readinessTile(
                     title: "Apple Configurator",
@@ -510,14 +467,14 @@ struct DashboardOverviewView: View {
                                 .foregroundStyle(evidenceColor(fact.status))
                                 .accessibilityHidden(true)
                             Text(fact.label)
-                                .font(.caption)
+                                .font(.system(size: 12))
                             Spacer(minLength: 6)
                             Text(fact.displayValue(revealSensitive: false))
-                                .font(.caption.weight(.medium))
+                                .font(.system(size: 12, weight: .medium))
                                 .multilineTextAlignment(.trailing)
                                 .lineLimit(2)
                         }
-                        .padding(.vertical, 5)
+                        .padding(.vertical, 7)
                         .help("\(fact.source) — \(fact.explanation)")
                         if index < facts.count - 1 { Divider() }
                     }
@@ -759,69 +716,87 @@ struct DashboardOverviewView: View {
 
 struct DashboardSettingsView: View {
     @ObservedObject var model: RecoveryModel
+    @AppStorage("yoiosAppearance") private var appearancePreference = "system"
     let openDashboard: () -> Void
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Settings & Dependency Doctor")
-                            .font(.title2.weight(.semibold))
-                        Text("Read-only readiness for the built-in mobile-device tools and optional Apple Configurator. Opening this page does not contact the iPhone.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    YIOSPageHeader(
+                        title: "Settings",
+                        subtitle: "Appearance, privacy, and the tools available on this Mac."
+                    )
                     Spacer(minLength: 12)
                     Button {
                         openDashboard()
                     } label: {
-                        Label("Back to Dashboard", systemImage: "arrow.left")
+                        Label("Dashboard", systemImage: "arrow.left")
                     }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("settingsBackButton")
                 }
 
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 16) {
-                        dependencyComponentsCard
-                        capabilityCard
+                DashboardPanel(title: "Appearance & privacy", systemImage: "slider.horizontal.3") {
+                    HStack(alignment: .top, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Appearance")
+                                .font(.callout.weight(.medium))
+                            Text("Choose how YIOS-KIT looks on this Mac.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 20)
+                        Picker("Appearance", selection: $appearancePreference) {
+                            Text("System").tag("system")
+                            Text("Light").tag("light")
+                            Text("Dark").tag("dark")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 240)
+                        .accessibilityIdentifier("settingsAppearancePicker")
                     }
-                    VStack(alignment: .leading, spacing: 16) {
-                        dependencyComponentsCard
-                        capabilityCard
+                    Divider()
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "hand.raised")
+                            .foregroundStyle(.blue)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Device identifiers stay private")
+                                .font(.callout.weight(.medium))
+                            Text("ECID, UDID, serial, IMEI, and network identifiers stay masked until a 60-second reveal. Reports are redacted by default.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 
-                HStack(alignment: .top, spacing: 16) {
-                    DashboardPanel(title: "Toolchain policy", systemImage: "shippingbox.and.arrow.backward", accent: .blue) {
-                        Label("Built-in helpers are preferred", systemImage: "checkmark.shield.fill")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.green)
-                        Text("A complete libimobiledevice suite must resolve from one source. YIOS-KIT never combines a partial built-in suite with Homebrew helpers during one capability.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("Apple Configurator is not bundled. It is required only for Apple Revive, Full Restore, and Factory Reset.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(minimum: 300), spacing: 20, alignment: .top), count: 2),
+                    alignment: .leading,
+                    spacing: 20
+                ) {
+                    dependencyComponentsCard
+                    capabilityCard
+                }
 
-                    DashboardPanel(title: "Appearance & privacy", systemImage: "hand.raised", accent: .purple) {
-                        Text("Use the appearance control in the header to cycle System, Light, and Dark modes. The preference is saved locally for the next launch.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("ECID, UDID, serial, IMEI, device name, SIM, and network identifiers stay masked until an explicit 60-second reveal. Reports remain redacted by default.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                DashboardPanel(title: "About the built-in tools", systemImage: "shippingbox") {
+                    Label("Built-in helpers are preferred", systemImage: "checkmark.shield.fill")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.green)
+                    Text("YIOS-KIT includes the mobile-device helpers it needs for inspection and Recovery. Each capability uses a complete, verified set of tools.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Apple Configurator is not bundled. It is required only for Apple Revive, Full Restore, and Factory Reset.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(20)
+            .padding(24)
         }
         .scrollIndicators(.hidden)
         .background(YIOSWorkspaceBackdrop(accent: .blue))
@@ -841,7 +816,7 @@ struct DashboardSettingsView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
-        .frame(minWidth: 360, maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("settingsDependencyPanel")
     }
 
@@ -873,7 +848,7 @@ struct DashboardSettingsView: View {
                 }
             }
         }
-        .frame(minWidth: 360, maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("settingsCapabilitiesPanel")
     }
 
@@ -940,11 +915,11 @@ private struct DashboardPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             YIOSPanelHeader(title, systemImage: systemImage, accent: accent)
             content
         }
-        .padding(15)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .yiosCardSurface(accent: accent, cornerRadius: 13)
     }
@@ -960,45 +935,43 @@ private struct DashboardActionTile: View {
     let subtitle: String
     let systemImage: String
     let accent: Color
+    var compact = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill((isEnabled ? accent : Color.secondary).opacity(colorScheme == .dark ? 0.18 : 0.10))
-                        Image(systemName: systemImage)
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(isEnabled ? accent : Color.secondary)
-                    }
-                    .frame(width: 36, height: 36)
-
-                    Spacer(minLength: 6)
-
-                    Image(systemName: "arrow.up.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isEnabled ? accent : Color.secondary)
-                        .offset(x: isHovered && isEnabled && !reduceMotion ? 2 : 0, y: isHovered && isEnabled && !reduceMotion ? -2 : 0)
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: systemImage)
+                    .font(.system(size: compact ? 15 : 17, weight: .medium))
+                    .foregroundStyle(isEnabled ? accent : Color.secondary)
+                    .frame(width: 22, height: 24)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(title)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+                    .accessibilityHidden(true)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 126, alignment: .topLeading)
-            .yiosCardSurface(
-                accent: isEnabled ? accent : .secondary,
-                cornerRadius: 13,
-                elevated: isHovered && isEnabled
+            .padding(13)
+            .frame(maxWidth: .infinity, minHeight: compact ? 64 : 82, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.primary.opacity(isHovered && isEnabled ? 0.055 : 0.025))
             )
-            .scaleEffect(isHovered && isEnabled && !reduceMotion ? 1.006 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(YIOSPressButtonStyle())
         .onHover { hovering in
@@ -1028,17 +1001,16 @@ private struct DashboardReadinessTile: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.caption.weight(.medium))
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(2)
                 Text(detail)
-                    .font(.caption2)
+                    .font(.system(size: 12))
                     .foregroundStyle(isReady ? Color.green : Color.orange)
                     .lineLimit(2)
             }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 66, alignment: .topLeading)
-        .yiosCardSurface(cornerRadius: 11, elevated: false)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
         .accessibilityElement(children: .combine)
     }
 }

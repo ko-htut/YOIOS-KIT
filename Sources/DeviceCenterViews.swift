@@ -13,50 +13,32 @@ struct DeviceCenterOverviewView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 20) {
+                    YIOSPageHeader(
+                        title: "Device details",
+                        subtitle: "Identity, software and connection information from your connected iPhone."
+                    )
                     detailStatusStrip
+                    deviceHero
 
-                    if geometry.size.width >= 980 {
-                    HStack(alignment: .top, spacing: 14) {
-                        deviceHero
-                            .frame(width: 220)
-                        VStack(alignment: .leading, spacing: 14) {
-                            factPanel("Identity", image: "person.text.rectangle", groups: [.identity])
-                            factPanel("Software & activation", image: "gearshape.2", groups: [.software, .security])
-                            factPanel("Cellular & network", image: "antenna.radiowaves.left.and.right", groups: [.cellular])
-                        }
-                        .frame(minWidth: 360, maxWidth: .infinity)
-                        VStack(alignment: .leading, spacing: 14) {
-                            batteryCard
-                            storageCard
-                            verificationCard
-                        }
-                        .frame(width: 300)
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(minimum: 260), spacing: 20, alignment: .top),
+                            count: geometry.size.width >= 1_100 ? 3 : (geometry.size.width >= 680 ? 2 : 1)
+                        ),
+                        alignment: .leading,
+                        spacing: 20
+                    ) {
+                        factPanel("Identity", image: "person.text.rectangle", groups: [.identity])
+                        factPanel("Software & activation", image: "gearshape.2", groups: [.software, .security])
+                        factPanel("Cellular & network", image: "antenna.radiowaves.left.and.right", groups: [.cellular])
+                        batteryCard
+                        storageCard
+                        verificationCard
                     }
-                    } else {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(alignment: .top, spacing: 14) {
-                            deviceHero.frame(width: 220)
-                            VStack(alignment: .leading, spacing: 14) {
-                                factPanel("Identity", image: "person.text.rectangle", groups: [.identity])
-                                factPanel("Software & activation", image: "gearshape.2", groups: [.software, .security])
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        HStack(alignment: .top, spacing: 14) {
-                            factPanel("Cellular & network", image: "antenna.radiowaves.left.and.right", groups: [.cellular])
-                            VStack(alignment: .leading, spacing: 14) {
-                                batteryCard
-                                storageCard
-                                verificationCard
-                            }
-                        }
-                    }
-                }
                 }
                 .frame(maxWidth: 1_260, alignment: .topLeading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+                .padding(24)
             }
             .scrollIndicators(.hidden)
             .frame(maxWidth: .infinity, alignment: .top)
@@ -73,36 +55,32 @@ struct DeviceCenterOverviewView: View {
     }
 
     private var detailStatusStrip: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: model.isLoadingDeviceCenter ? "arrow.triangle.2.circlepath" : "info.circle.fill")
-                .foregroundStyle(.blue)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: model.isLoadingDeviceCenter ? "arrow.triangle.2.circlepath" : "info.circle")
+                    .foregroundStyle(.blue)
+                    .accessibilityHidden(true)
                 Text(detailStatusMessage)
-                    .font(.callout.weight(.medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Every value is labelled by source. Missing data is never converted into a healthy/normal verdict.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 10)
-            if details.facts.contains(where: { $0.sensitivity != .none }) {
-                Button(revealsSensitiveValues ? "Hide identifiers" : "Reveal for 60s") {
-                    revealsSensitiveValues ? hideSensitiveValues() : requestReveal()
+            HStack(spacing: 10) {
+                Label(revealsSensitiveValues ? "Identifiers visible for 60 seconds" : "Private identifiers are hidden", systemImage: revealsSensitiveValues ? "eye" : "eye.slash")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(revealsSensitiveValues ? Color.orange : Color.secondary)
+                Spacer(minLength: 8)
+                if details.facts.contains(where: { $0.sensitivity != .none }) {
+                    Button(revealsSensitiveValues ? "Hide identifiers" : "Reveal for 60s") {
+                        revealsSensitiveValues ? hideSensitiveValues() : requestReveal()
+                    }
+                    .controlSize(.regular)
+                    .accessibilityIdentifier("revealIdentifiersButton")
                 }
-                .controlSize(.small)
-                .accessibilityIdentifier("revealIdentifiersButton")
             }
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.blue.opacity(colorScheme == .dark ? 0.13 : 0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.blue.opacity(0.22), lineWidth: 1)
-        )
+        .padding(16)
+        .yiosCardSurface(elevated: false)
         .accessibilityIdentifier("deviceCenterDetailStatus")
     }
 
@@ -118,68 +96,66 @@ struct DeviceCenterOverviewView: View {
             title: model.snapshot.deviceCount == 0 ? "No iPhone connected" : "Connected iPhone",
             systemImage: "iphone.gen2"
         ) {
-            VStack(spacing: 11) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 34, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.blue.opacity(0.20), Color.purple.opacity(0.10)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 112, height: 184)
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .stroke(Color.primary.opacity(0.72), lineWidth: 4)
-                        .frame(width: 96, height: 168)
-                    VStack(spacing: 9) {
-                        Image(systemName: modeSymbol)
-                            .font(.system(size: 31, weight: .medium))
-                            .foregroundStyle(modeColor)
-                        Text(details.mode.title)
-                            .font(.caption2.weight(.semibold))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 14)
-                    }
-                }
-                .accessibilityHidden(true)
+            HStack(alignment: .center, spacing: 20) {
+                Image(systemName: model.snapshot.deviceCount == 0 ? "iphone.slash" : "iphone.gen2")
+                    .font(.system(size: 60, weight: .ultraLight))
+                    .foregroundStyle(Color.blue)
+                    .frame(width: 90, height: 100)
+                    .background(RoundedRectangle(cornerRadius: 18).fill(Color.blue.opacity(0.06)))
+                    .accessibilityHidden(true)
 
-                VStack(spacing: 3) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(modelName)
-                        .font(.headline)
-                        .multilineTextAlignment(.center)
+                        .font(.system(size: 23, weight: .semibold))
                     if let name = details.fact("deviceName") {
                         Text(name.displayValue(revealSensitive: revealsSensitiveValues))
-                            .font(.caption)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Text(lastUpdatedText)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-
-                HStack(spacing: 6) {
-                    Label(details.mode.title, systemImage: modeSymbol)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(modeColor)
-                        .lineLimit(1)
-                    if let battery = details.batteryPercent {
-                        Text("• \(battery)%")
-                            .font(.caption2.weight(.semibold))
+                    HStack(spacing: 8) {
+                        Label(details.mode.title, systemImage: modeSymbol)
+                            .foregroundStyle(modeColor)
+                        if let battery = details.batteryPercent {
+                            Text("·")
+                            Label("\(battery)%", systemImage: batterySymbol)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .font(.callout.weight(.medium))
+                    Text(lastUpdatedText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 0)
+            }
 
-                Divider()
+            Divider().padding(.vertical, 4)
 
-                VStack(spacing: 7) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    deviceReadActions
+                    Spacer(minLength: 8)
+                    devicePowerActions
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) { deviceReadActions }
+                    HStack(spacing: 10) { devicePowerActions }
+                }
+            }
+            .controlSize(.regular)
+        }
+        .accessibilityIdentifier("deviceHeroPanel")
+    }
+
+    @ViewBuilder
+    private var deviceReadActions: some View {
                     Button {
                         model.refreshDeviceCenter()
                     } label: {
                         Label("Refresh details", systemImage: "arrow.clockwise")
-                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(YIOSActionButtonStyle())
                     .disabled(!model.canRefreshDeviceCenter)
                     .accessibilityIdentifier("refreshDeviceDetailsButton")
 
@@ -187,7 +163,6 @@ struct DeviceCenterOverviewView: View {
                         model.copyDeviceSummary()
                     } label: {
                         Label("Copy summary", systemImage: "doc.on.doc")
-                            .frame(maxWidth: .infinity)
                     }
                     .disabled(details.facts.isEmpty)
                     .accessibilityIdentifier("copyDeviceSummaryButton")
@@ -196,7 +171,6 @@ struct DeviceCenterOverviewView: View {
                         model.saveDeviceReport()
                     } label: {
                         Label("Export report…", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
                     }
                     .disabled(details.facts.isEmpty)
                     .accessibilityIdentifier("exportDeviceReportButton")
@@ -204,22 +178,22 @@ struct DeviceCenterOverviewView: View {
                     Button {
                         model.openAppleCoverage()
                     } label: {
-                        Label("Check coverage with Apple", systemImage: "safari")
-                            .frame(maxWidth: .infinity)
+                        Label("Apple coverage", systemImage: "arrow.up.right.square")
                     }
                     .help("Opens Apple's official page without sending the serial number")
                     .accessibilityIdentifier("appleCoverageButton")
 
-                    Divider()
+    }
 
-                    HStack(spacing: 7) {
+    @ViewBuilder
+    private var devicePowerActions: some View {
                         Button {
                             model.restartIPhone()
                         } label: {
                             Label("Restart…", systemImage: "arrow.clockwise.circle")
                         }
                         .disabled(!model.canUseNormalDeviceUtilities)
-            .help("Verified supported iPhone in Normal iOS only; the exact model and target are checked again")
+                        .help("Verified supported iPhone in Normal iOS only; the exact model and target are checked again")
                         .accessibilityIdentifier("restartIPhoneButton")
 
                         Button {
@@ -229,15 +203,8 @@ struct DeviceCenterOverviewView: View {
                         }
                         .tint(.red)
                         .disabled(!model.canUseNormalDeviceUtilities)
-            .help("Powers off the exact verified supported iPhone after confirmation")
+                        .help("Powers off the exact verified supported iPhone after confirmation")
                         .accessibilityIdentifier("shutDownIPhoneButton")
-                    }
-                }
-                .controlSize(.small)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .accessibilityIdentifier("deviceHeroPanel")
     }
 
     private func factPanel(
@@ -430,22 +397,35 @@ struct DeviceCenterOverviewView: View {
 
 struct DeviceEvidenceView: View {
     @ObservedObject var model: RecoveryModel
+    @State private var selectedGroup: DeviceFactGroup?
+    @State private var showsSourceDetails = false
 
     private var details: DeviceCenterSnapshot { model.displayedDeviceCenterSnapshot }
+    private var visibleGroups: [DeviceFactGroup] {
+        selectedGroup.map { [$0] } ?? DeviceFactGroup.allCases
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Source-attributed evidence")
-                            .font(.title3.weight(.semibold))
-                        Text("Verified means a protocol/cross-source check passed. Reported means one trusted Apple/device source returned the value. Neither is a hardware health score.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 20) {
+                YIOSPageHeader(
+                    title: "Reports & evidence",
+                    subtitle: "Review device values, see where they came from, and export a private report."
+                )
+
+                HStack(spacing: 12) {
+                    Picker("Category", selection: $selectedGroup) {
+                        Text("All categories").tag(Optional<DeviceFactGroup>.none)
+                        ForEach(DeviceFactGroup.allCases, id: \.self) { group in
+                            Text(group.rawValue).tag(Optional(group))
+                        }
                     }
-                    Spacer()
+                    .frame(maxWidth: 220)
+                    .accessibilityIdentifier("evidenceCategoryPicker")
+                    Toggle("Show source details", isOn: $showsSourceDetails)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("evidenceSourceDetailsToggle")
+                    Spacer(minLength: 8)
                     Button("Refresh") { model.refreshDeviceCenter() }
                         .disabled(!model.canRefreshDeviceCenter)
                         .accessibilityIdentifier("evidenceRefreshButton")
@@ -453,19 +433,47 @@ struct DeviceEvidenceView: View {
                         .disabled(details.facts.isEmpty)
                         .accessibilityIdentifier("evidenceExportButton")
                 }
+                .controlSize(.regular)
 
-                ForEach(DeviceFactGroup.allCases, id: \.self) { group in
+                HStack(spacing: 18) {
+                    Label("Verified · cross-checked", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Label("Reported · source returned a value", systemImage: "info.circle.fill")
+                        .foregroundStyle(.blue)
+                }
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("These labels describe the evidence available, not the iPhone's hardware health.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(visibleGroups, id: \.self) { group in
                     let facts = details.facts(in: group)
                     if !facts.isEmpty {
                         DCPanel(title: group.rawValue, systemImage: groupSymbol(group)) {
                             VStack(spacing: 0) {
                                 ForEach(Array(facts.enumerated()), id: \.element.id) { index, fact in
-                                    EvidenceDetailRow(fact: fact)
+                                    EvidenceDetailRow(fact: fact, showsSourceDetails: showsSourceDetails)
                                     if index < facts.count - 1 { Divider() }
                                 }
                             }
                         }
                     }
+                }
+
+                if visibleGroups.allSatisfy({ details.facts(in: $0).isEmpty }) {
+                    DCPanel(
+                        title: selectedGroup.map { "No \($0.rawValue.lowercased()) data" } ?? "No device report yet",
+                        systemImage: "doc.text.magnifyingglass"
+                    ) {
+                        Text(details.facts.isEmpty
+                             ? "Connect one iPhone and scan it to collect a report. Unlock the iPhone and accept Trust to include private details."
+                             : "This category has no data in the current device snapshot. Some values are available only in trusted Normal iOS. Choose All categories to see the collected report.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityIdentifier("evidenceEmptyState")
                 }
 
                 if !details.notes.isEmpty {
@@ -480,7 +488,7 @@ struct DeviceEvidenceView: View {
                 }
             }
             .frame(maxWidth: 1_100, alignment: .topLeading)
-            .padding(20)
+            .padding(24)
         }
         .scrollIndicators(.hidden)
         .background(YIOSWorkspaceBackdrop(accent: .blue))
@@ -503,11 +511,12 @@ struct DeviceActivityView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 20) {
+                YIOSPageHeader(title: pageTitle, subtitle: pageSubtitle)
                 focusedSections
             }
             .frame(maxWidth: 1_100, alignment: .topLeading)
-            .padding(20)
+            .padding(24)
         }
         .scrollIndicators(.hidden)
         .background(YIOSWorkspaceBackdrop(accent: model.crashCopyReviewRequired ? .red : .blue))
@@ -515,37 +524,42 @@ struct DeviceActivityView: View {
         .accessibilityValue(focus.rawValue)
     }
 
+    private var pageTitle: String {
+        switch focus {
+        case .history: return "Session history"
+        case .tools: return "Device tools"
+        case .logs: return "Diagnostic logs"
+        case .crashReview: return "Review copied reports"
+        }
+    }
+
+    private var pageSubtitle: String {
+        switch focus {
+        case .history: return "Connection changes and operation results from this app session."
+        case .tools: return "Back up with Finder or save the iPhone's crash reports to this Mac."
+        case .logs: return "Inspect activity, copy an error, or save a log for troubleshooting."
+        case .crashReview: return "Check the copied folder and iPhone before clearing the review lock."
+        }
+    }
+
     @ViewBuilder
     private var focusedSections: some View {
         switch focus {
         case .history:
-            currentOperationPanel
+            if model.operationRunning || model.crashCopyReviewRequired { currentOperationPanel }
             timelineCenter
-            diagnosticLogPanel
-            lastErrorPanel
-            backupCenter
-            crashReportCenter
         case .tools:
-            currentOperationPanel
+            if model.operationRunning || model.crashCopyReviewRequired { currentOperationPanel }
             backupCenter
             crashReportCenter
-            timelineCenter
-            diagnosticLogPanel
-            lastErrorPanel
         case .logs:
-            currentOperationPanel
+            if model.operationRunning { currentOperationPanel }
             lastErrorPanel
             diagnosticLogPanel
-            timelineCenter
-            backupCenter
-            crashReportCenter
         case .crashReview:
             crashReportCenter
             currentOperationPanel
             lastErrorPanel
-            diagnosticLogPanel
-            backupCenter
-            timelineCenter
         }
     }
 
@@ -608,12 +622,13 @@ struct DeviceActivityView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(model.logText.isEmpty ? "No log entries yet." : model.logText)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.system(size: 12, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
                         .id("activity-log-end")
                 }
-                .padding(10)
+                .frame(height: 340)
+                .padding(14)
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(
@@ -679,7 +694,7 @@ struct DeviceActivityView: View {
                 ViewThatFits(in: .horizontal) {
                     HStack {
                         Button("Open Finder…") { model.openFinderBackup() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(YIOSActionButtonStyle())
                             .disabled(!model.canOpenFinderBackup)
                             .accessibilityIdentifier("openFinderBackupButton")
                         Button("Apple backup guide") { model.openAppleBackupGuide() }
@@ -687,7 +702,7 @@ struct DeviceActivityView: View {
                     }
                     VStack(alignment: .leading) {
                         Button("Open Finder…") { model.openFinderBackup() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(YIOSActionButtonStyle())
                             .disabled(!model.canOpenFinderBackup)
                             .accessibilityIdentifier("openFinderBackupButton")
                         Button("Apple backup guide") { model.openAppleBackupGuide() }
@@ -702,7 +717,7 @@ struct DeviceActivityView: View {
     private var crashReportCenter: some View {
         DCPanel(title: "Crash & Panic Reports", systemImage: "waveform.path.ecg.rectangle", accent: .orange) {
             VStack(alignment: .leading, spacing: 9) {
-                Text("Copies reports into a new private local folder with idevicecrashreport --keep. Reports can contain app names, paths, identifiers, and diagnostic or user context. This app does not upload contents, interpret them as a hardware verdict, or request removal from the iPhone.")
+                Text("Save a copy of the iPhone's reports to a new private folder on this Mac. Reports stay on the iPhone. They can contain app names, paths, identifiers and private diagnostic context; contents are never uploaded.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -720,6 +735,10 @@ struct DeviceActivityView: View {
                 }
 
                 crashReportActions
+
+                Text("The app copies these files for your review; it does not diagnose hardware faults from them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 if let summary = model.crashReportSummary {
                     Divider()
@@ -777,7 +796,7 @@ struct DeviceActivityView: View {
                 .accessibilityIdentifier("openCrashReportFolderButton")
         }
         Button("Copy from iPhone…") { model.copyCrashReports() }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(YIOSActionButtonStyle())
             .disabled(!model.canCopyCrashReports)
             .accessibilityIdentifier("copyCrashReportsButton")
     }
@@ -791,9 +810,14 @@ struct DeviceActivityView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if model.deviceTimeline.isEmpty {
-                    Label("No timeline events yet.", systemImage: "clock")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Your session will appear here", systemImage: "clock.arrow.circlepath")
+                            .font(.headline)
+                        Text("Scan an iPhone to record connection observations. Events stay local to this app session.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(model.deviceTimeline.suffix(12).reversed())) { event in
@@ -832,8 +856,8 @@ private struct DeviceTimelineRow: View {
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 8)
                     Text(event.observedAt.formatted(date: .omitted, time: .standard))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                    .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
                 Text(event.detail)
                     .font(.caption)
@@ -848,7 +872,7 @@ private struct DeviceTimelineRow: View {
                 .foregroundStyle(.tertiary)
             }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
     }
@@ -893,6 +917,7 @@ private struct DeviceDetailRow: View {
 
 private struct EvidenceDetailRow: View {
     let fact: DeviceFact
+    let showsSourceDetails: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -915,16 +940,19 @@ private struct EvidenceDetailRow: View {
                 Text(fact.displayValue(revealSensitive: false))
                     .font(fact.sensitivity == .none ? .callout : .system(.callout, design: .monospaced))
                     .textSelection(.enabled)
-                Text(fact.explanation)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Label(fact.source, systemImage: "link")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                if showsSourceDetails {
+                    Text(fact.explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Label(fact.source, systemImage: "link")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 8)
+        .help("Source: \(fact.source). \(fact.explanation)")
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(fact.label), \(fact.status.title), \(fact.displayValue(revealSensitive: false)), source \(fact.source). \(fact.explanation)")
     }
@@ -960,11 +988,11 @@ private struct DCPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 16) {
             YIOSPanelHeader(title, systemImage: systemImage, accent: accent)
             content
         }
-        .padding(14)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .yiosCardSurface(accent: accent, cornerRadius: 12)
     }
