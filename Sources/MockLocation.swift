@@ -90,6 +90,7 @@ enum MockLocationTargetError: LocalizedError, Equatable {
     case normalModeRequired
     case unverifiedMode
     case unsupportedDevice
+    case conflictingIdentity
     case missingECID
     case missingUDID
     case missingUSBLocation
@@ -106,7 +107,9 @@ enum MockLocationTargetError: LocalizedError, Equatable {
         case .unverifiedMode:
             return "The current USB mode has not been protocol-verified. Scan again before continuing."
         case .unsupportedDevice:
-            return "This build is pinned to iPhone SE (2nd generation), iPhone12,8."
+            return "Mock Location requires a valid, verified iPhone product type."
+        case .conflictingIdentity:
+            return "The device identity sources disagree. Reconnect the iPhone and scan again."
         case .missingECID:
             return "A verified ECID is required to pin the exact target."
         case .missingUDID:
@@ -157,18 +160,21 @@ struct MockLocationExactTarget: Equatable {
         }
         guard snapshot.mode == .normal else { throw MockLocationTargetError.normalModeRequired }
         guard snapshot.modeVerified else { throw MockLocationTargetError.unverifiedMode }
-        guard snapshot.isSE2 else { throw MockLocationTargetError.unsupportedDevice }
-        guard let ecid = DeviceDetector.canonicalECIDHex(snapshot.ecid) else {
+        guard !snapshot.identityConflict else { throw MockLocationTargetError.conflictingIdentity }
+        guard let ecid = DeviceDetector.canonicalECIDHex(snapshot.ecid), ecid != "0x0" else {
             throw MockLocationTargetError.missingECID
         }
-        guard let rawUDID = snapshot.udid?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawUDID.isEmpty else { throw MockLocationTargetError.missingUDID }
+        guard let rawUDID = Self.validatedUDID(snapshot.udid) else {
+            throw MockLocationTargetError.missingUDID
+        }
         guard let locationID = snapshot.locationID, locationID >= 0 else {
             throw MockLocationTargetError.missingUSBLocation
         }
-        guard let productType = snapshot.productType?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !productType.isEmpty else { throw MockLocationTargetError.missingProductType }
-        guard productType == "iPhone12,8" else { throw MockLocationTargetError.unsupportedDevice }
+        guard let rawProductType = snapshot.productType,
+              !rawProductType.isEmpty else { throw MockLocationTargetError.missingProductType }
+        guard let productType = Self.validatedProductType(rawProductType) else {
+            throw MockLocationTargetError.unsupportedDevice
+        }
 
         self.ecid = ecid
         self.udid = rawUDID
@@ -202,12 +208,33 @@ struct MockLocationExactTarget: Equatable {
 
     static func stablePin(for snapshot: DeviceSnapshot) -> MockLocationTargetPin? {
         guard snapshot.deviceCount == 1,
-              let ecid = DeviceDetector.canonicalECIDHex(snapshot.ecid),
-              let rawUDID = snapshot.udid?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawUDID.isEmpty,
-              let productType = snapshot.productType?.trimmingCharacters(in: .whitespacesAndNewlines),
-              productType == "iPhone12,8" else { return nil }
+              !snapshot.identityConflict,
+              let ecid = DeviceDetector.canonicalECIDHex(snapshot.ecid), ecid != "0x0",
+              let rawUDID = validatedUDID(snapshot.udid),
+              let productType = validatedProductType(snapshot.productType) else { return nil }
         return makeStablePin(ecid: ecid, udid: rawUDID, productType: productType)
+    }
+
+    fileprivate static func validatedProductType(_ value: String?) -> String? {
+        guard let value, value.utf8.count <= 32,
+              let expression = try? NSRegularExpression(pattern: #"^iPhone[1-9][0-9]*,(0|[1-9][0-9]*)$"#) else {
+            return nil
+        }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard expression.firstMatch(in: value, range: range)?.range == range else { return nil }
+        let components = value.dropFirst("iPhone".count).split(separator: ",")
+        guard components.count == 2,
+              Int64(components[0]) != nil,
+              Int64(components[1]) != nil else { return nil }
+        return value
+    }
+
+    private static func validatedUDID(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let expression = try? NSRegularExpression(pattern: #"^[A-Za-z0-9-]{8,64}$"#) else { return nil }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard expression.firstMatch(in: value, range: range)?.range == range else { return nil }
+        return value
     }
 
     private static func makePin(
@@ -304,7 +331,7 @@ enum MockLocationReadinessIssue: String, Equatable {
         case .hostBusy:
             return "Another device workflow is active."
         case .targetNotEligible:
-            return "One verified iPhone SE (2nd generation) in Normal iOS is required."
+            return "One verified iPhone in Normal iOS is required."
         case .targetChanged:
             return "The exact ECID, UDID, or USB location changed during preflight."
         case .pairingRequired:
@@ -1113,11 +1140,7 @@ enum MockLocationBackendEventParser {
     }
 
     private static func safeProductType(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.utf8.count <= 32,
-              trimmed.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "," }) else { return nil }
-        return trimmed
+        MockLocationExactTarget.validatedProductType(value)
     }
 }
 

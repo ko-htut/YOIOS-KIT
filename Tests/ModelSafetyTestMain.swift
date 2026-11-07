@@ -203,6 +203,8 @@ struct ModelSafetyTestMain {
         model.snapshot.chipID = "0x8101"
         model.snapshot.boardID = "0x0A"
         expect(!model.canFactoryReset, "iPhone 12 mini must remain above the supported Factory Reset boundary")
+        expect((try? MockLocationExactTarget(snapshot: model.snapshot)) != nil, "generic Normal-iOS Mock Location must accept an exact iPhone outside the destructive catalog")
+        expect(!model.canUseNormalDeviceUtilities && !model.canCopyCrashReports, "broader Mock Location support must not broaden power controls or crash-report copy")
         expect(model.primaryActionEnabled, "a valid exact iPhone outside the destructive catalog must still allow non-destructive Recovery entry")
         expect(model.primaryActionTitle == (ToolPaths.enterRecovery == nil ? "Guide me to Recovery" : "Enter Recovery (keep data)"), "unsupported-model Normal iOS must expose Recovery or its physical fallback honestly")
         expect(model.canStartDFUAssistant, "a valid exact iPhone outside the destructive catalog must allow the passive DFU Assistant")

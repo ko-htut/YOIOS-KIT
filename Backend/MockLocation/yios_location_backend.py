@@ -22,15 +22,15 @@ from typing import Any, Dict, Optional, Tuple
 
 
 PROTOCOL_VERSION = 1
-BACKEND_VERSION = "1.1.0"
+BACKEND_VERSION = "1.2.0"
 PINNED_PYMOBILEDEVICE3_VERSION = "10.9.0"
-EXPECTED_PRODUCT_TYPE = "iPhone12,8"
 MINIMUM_IOS = (17, 4)
 MAX_REQUEST_BYTES = 4096
 CONNECT_TIMEOUT_SECONDS = 45.0
 SERVICE_TIMEOUT_SECONDS = 30.0
 UDID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 ECID_PATTERN = re.compile(r"^0x[0-9A-F]{1,16}$")
+IPHONE_PRODUCT_TYPE_PATTERN = re.compile(r"^iPhone[1-9][0-9]*,(?:0|[1-9][0-9]*)$")
 DECIMAL_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 
 
@@ -117,6 +117,19 @@ def parse_json_line(line: bytes) -> Optional[Dict[str, Any]]:
 
 def parse_udid(value: Any) -> Optional[str]:
     if not isinstance(value, str) or UDID_PATTERN.fullmatch(value) is None:
+        return None
+    return value
+
+
+def parse_product_type(value: Any) -> Optional[str]:
+    if (
+        not isinstance(value, str)
+        or len(value) > 32
+        or IPHONE_PRODUCT_TYPE_PATTERN.fullmatch(value) is None
+    ):
+        return None
+    major, minor = value[len("iPhone"):].split(",")
+    if int(major) > 0x7FFFFFFFFFFFFFFF or int(minor) > 0x7FFFFFFFFFFFFFFF:
         return None
     return value
 
@@ -267,7 +280,11 @@ async def read_stdin_line() -> bytes:
     return await asyncio.to_thread(sys.stdin.buffer.readline, MAX_REQUEST_BYTES + 1)
 
 
-async def open_attested_target(imports: BackendImports, udid: str) -> Tuple[Any, Any]:
+async def open_attested_target(
+    imports: BackendImports,
+    udid: str,
+    expected_product_type: str,
+) -> Tuple[Any, Any]:
     tunnel = imports.UserspaceRsdTunnel(
         serial=udid,
         autopair=False,
@@ -278,8 +295,8 @@ async def open_attested_target(imports: BackendImports, udid: str) -> Tuple[Any,
 
         if normalized_udid(getattr(rsd, "udid", None)) != normalized_udid(udid):
             raise TargetMismatchError()
-        if getattr(rsd, "product_type", None) != EXPECTED_PRODUCT_TYPE:
-            raise UnsupportedModelError()
+        if getattr(rsd, "product_type", None) != expected_product_type:
+            raise TargetMismatchError()
 
         os_version = parse_os_version(getattr(rsd, "product_version", None))
         if os_version is None or os_version < MINIMUM_IOS:
@@ -292,7 +309,7 @@ async def open_attested_target(imports: BackendImports, udid: str) -> Tuple[Any,
         if developer_mode is not True:
             raise DeveloperModeDisabledError()
 
-        emit("attested", "ok", product_type=EXPECTED_PRODUCT_TYPE)
+        emit("attested", "ok", product_type=expected_product_type)
         return tunnel, rsd
     except BaseException:
         await tunnel.aclose()
@@ -300,10 +317,6 @@ async def open_attested_target(imports: BackendImports, udid: str) -> Tuple[Any,
 
 
 class TargetMismatchError(Exception):
-    pass
-
-
-class UnsupportedModelError(Exception):
     pass
 
 
@@ -322,6 +335,7 @@ class PairingRequiredError(Exception):
 async def reveal_developer_mode(
     imports: BackendImports,
     udid: str,
+    expected_product_type: str,
     expected_ecid: int,
 ) -> int:
     lockdown = None
@@ -348,7 +362,7 @@ async def reveal_developer_mode(
         if normalized_udid(reported_udid) != normalized_udid(udid):
             raise TargetMismatchError()
         if (
-            getattr(lockdown, "product_type", None) != EXPECTED_PRODUCT_TYPE
+            getattr(lockdown, "product_type", None) != expected_product_type
             or reported_ecid != expected_ecid
         ):
             raise TargetMismatchError()
@@ -358,7 +372,7 @@ async def reveal_developer_mode(
         if getattr(lockdown, "paired", False) is not True:
             raise PairingRequiredError()
 
-        emit("attested", "ok", product_type=EXPECTED_PRODUCT_TYPE)
+        emit("attested", "ok", product_type=expected_product_type)
         phase = "developerModeStatus"
         enabled = await asyncio.wait_for(
             lockdown.get_developer_mode_status(),
@@ -433,14 +447,15 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
         return fail("invalid_request", "request", 2)
 
     udid = parse_udid(request.get("udid"))
-    if udid is None or request.get("expectedProductType") != EXPECTED_PRODUCT_TYPE:
+    expected_product_type = parse_product_type(request.get("expectedProductType"))
+    if udid is None or expected_product_type is None:
         return fail("invalid_request", "request", 2)
 
     if command == "reveal-developer-mode":
         expected_ecid = parse_ecid(request.get("expectedECID"))
         if expected_ecid is None:
             return fail("invalid_request", "request", 2)
-        return await reveal_developer_mode(imports, udid, expected_ecid)
+        return await reveal_developer_mode(imports, udid, expected_product_type, expected_ecid)
 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -455,7 +470,7 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
     dvt = None
     phase = "tunnel"
     try:
-        tunnel, rsd = await open_attested_target(imports, udid)
+        tunnel, rsd = await open_attested_target(imports, udid, expected_product_type)
         phase = "dvt"
         dvt, location = await with_location_service(imports, rsd)
         phase = "location_service"
@@ -517,8 +532,6 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
             return 0
     except TargetMismatchError:
         return fail("target_mismatch", "attestation")
-    except UnsupportedModelError:
-        return fail("developer_service_unavailable", "attestation")
     except UnsupportedOSError:
         return fail("developer_service_unavailable", "attestation")
     except DeveloperModeDisabledError:

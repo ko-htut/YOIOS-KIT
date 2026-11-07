@@ -204,10 +204,16 @@ struct VisualTestMain {
             model.statusText = "Watching the connected iPhone for Recovery or DFU"
             model.detailText = "Follow the physical button sequence. You can stop the USB watcher from any page."
 
-        case .mockLocationIdle, .mockLocationReview, .mockLocationPersistent:
+        case .mockLocationIdle:
+            model.snapshot = genericMockLocationTargetFixture()
+            model.deviceCenterSnapshot = DeviceCenterCollector.baseline(for: model.snapshot)
+            model.statusText = "Normal iOS mode verified"
+            model.detailText = "This iPhone model is eligible for an exact-target Mock Location developer-service check."
+
+        case .mockLocationReview, .mockLocationPersistent:
             applyNormalFixture(to: model, productType: "iPhone12,8")
             model.statusText = "Normal iOS mode verified"
-            model.detailText = "The SE2-only Mock Location target is trusted and communicating."
+            model.detailText = "The original Mock Location target is trusted and communicating."
 
         case .crashReview:
             applyNormalFixture(to: model)
@@ -398,6 +404,23 @@ struct VisualTestMain {
             buildVersion: "21H16",
             activationState: "Activated",
             modeVerified: true
+        )
+    }
+
+    private static func genericMockLocationTargetFixture() -> DeviceSnapshot {
+        DeviceSnapshot(
+            mode: .normal,
+            deviceCount: 1,
+            usbPID: 0x12A8,
+            locationID: 1_048_576,
+            ecid: "0x123456789ABCDE",
+            udid: "00008130-00123456789ABCDE",
+            productType: "iPhone16,1",
+            productVersion: "17.7",
+            buildVersion: "21H16",
+            activationState: "Activated",
+            modeVerified: true,
+            marketingName: "iPhone 15 Pro"
         )
     }
 

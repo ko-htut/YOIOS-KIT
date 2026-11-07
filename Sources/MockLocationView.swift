@@ -30,7 +30,7 @@ struct MockLocationView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     YIOSPageHeader(
                         title: "Mock Location",
-                        subtitle: "Set a test coordinate on your iPhone and return to real location when finished."
+                        subtitle: "Set a test coordinate on a compatible iPhone running iOS 17.4 or later."
                     )
                     statusHero
 
@@ -315,6 +315,10 @@ struct MockLocationView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text("All iPhone models can be checked. iOS 17.4 or later, existing Trust, Developer Mode, and matching developer services are required.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Button("Check Readiness") { controller.checkReadiness() }
                 .buttonStyle(YIOSActionButtonStyle())
                 .controlSize(.large)
@@ -324,7 +328,7 @@ struct MockLocationView: View {
             DisclosureGroup("Connection checks", isExpanded: $showsReadinessDetails) {
                 VStack(spacing: 0) {
                 readinessRow(
-                    title: "Exact Normal-iOS SE2",
+                    title: "Exact Normal-iOS iPhone",
                     detail: identityMatchText,
                     state: identityRowState
                 )

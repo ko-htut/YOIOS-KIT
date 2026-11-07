@@ -121,7 +121,14 @@ struct UIContractTestMain {
         }
 
         let mockLocationModel = fixture(for: .normal)
-        applyNormalFixture(to: mockLocationModel, supportedModel: SupportedDeviceCatalog.se2)
+        applyGenericMockLocationFixture(to: mockLocationModel)
+        expect(
+            (try? MockLocationExactTarget(snapshot: mockLocationModel.snapshot)) != nil,
+            .normal,
+            "an exact iPhone outside the reviewed recovery catalog must be eligible for Mock Location checks"
+        )
+        expect(mockLocationModel.currentSupportedModel == nil, .normal, "generic Mock Location must not add a device to the recovery catalog")
+        expect(!mockLocationModel.canFactoryReset && !mockLocationModel.canUseNormalDeviceUtilities, .normal, "generic Mock Location eligibility must not grant catalog-bound operations")
         let mockLocationRender = render(
             model: mockLocationModel,
             colorScheme: .light,
@@ -236,7 +243,7 @@ struct UIContractTestMain {
             for scheme in [ColorScheme.light, .dark] {
                 let routeModel = fixture(for: .normal)
                 if destination == .mockLocation {
-                    applyNormalFixture(to: routeModel, supportedModel: SupportedDeviceCatalog.se2)
+                    applyGenericMockLocationFixture(to: routeModel)
                 }
                 let routeRender = render(
                     model: routeModel,
@@ -479,6 +486,25 @@ struct UIContractTestMain {
             chipID: String(format: "0x%X", supportedModel.chipID),
             boardID: String(format: "0x%X", supportedModel.boardID)
         )
+    }
+
+    private static func applyGenericMockLocationFixture(to model: RecoveryModel) {
+        model.snapshot = DeviceSnapshot(
+            mode: .normal,
+            deviceCount: 1,
+            usbPID: 0x12A8,
+            locationID: 1_048_576,
+            ecid: "0x123456789ABCDE",
+            udid: "00008130-00123456789ABCDE",
+            productType: "iPhone16,1",
+            productVersion: "17.7",
+            buildVersion: "21H16",
+            activationState: "Activated",
+            modeVerified: true,
+            marketingName: "iPhone 15 Pro"
+        )
+        model.statusText = "Normal iOS mode verified"
+        model.detailText = "This exact iPhone can be checked for Mock Location developer-service support."
     }
 
     private static func lockedMockLocationModel(persistent: Bool) -> RecoveryModel {

@@ -44,7 +44,7 @@ struct SupportedDeviceCatalogTestMain {
         testBoundariesAndConflicts()
         testNormalAndRecoveryEvidence()
         testManifestCompatibility()
-        testIPhone11RecoveryDoesNotExpandMockLocation()
+        testMockLocationUsesNormalIPhoneIdentity()
 
         if failures.isEmpty {
             print("SUPPORTED DEVICE CATALOG TEST PASS")
@@ -203,19 +203,19 @@ struct SupportedDeviceCatalogTestMain {
         }
     }
 
-    private static func testIPhone11RecoveryDoesNotExpandMockLocation() {
+    private static func testMockLocationUsesNormalIPhoneIdentity() {
         let row = expectedRows[10]
         var recovery = snapshot(for: row, mode: .recovery)
         recovery.recoveryIdentityQueryVerified = true
         expect(recovery.supportedDeviceModel == row.model, "iPhone 11 must resolve as a supported recovery target")
         expect(recovery.hasVerifiedSupportedDeviceIdentity, "iPhone 11 must pass complete Recovery identity verification")
+        expect((try? MockLocationExactTarget(snapshot: recovery)) == nil, "Recovery mode must remain ineligible for Mock Location")
 
         let normal = snapshot(for: row, mode: .normal)
         do {
-            _ = try MockLocationExactTarget(snapshot: normal)
-            failures.append("iPhone 11 must remain rejected by SE2-only Mock Location")
-        } catch let error as MockLocationTargetError {
-            expect(error == .unsupportedDevice, "iPhone 11 Mock Location rejection must be unsupportedDevice, got \(error)")
+            let target = try MockLocationExactTarget(snapshot: normal)
+            expect(target.productType == row.productType, "Normal-iOS Mock Location must pin the requested iPhone 11 ProductType")
+            expect(target.matches(normal), "the generic Normal-iOS target must match its exact identity")
         } catch {
             failures.append("iPhone 11 Mock Location returned unexpected error: \(error.localizedDescription)")
         }

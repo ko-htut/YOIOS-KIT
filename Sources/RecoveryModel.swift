@@ -542,7 +542,7 @@ final class RecoveryModel: ObservableObject {
         let persistenceWarning = isPersistent
             ? "\n\nExperimental persistent mode waits for Apple's Set acknowledgement, then closes the developer session without sending Clear. The location may survive cable disconnect until Return to Real Location or an iPhone reboot, but iOS provides no getter and this behavior is not guaranteed on every build. YIOS-KIT keeps its safety lock until an exact-target Clear is recorded; even after reboot, reconnect and send Return to Real Location to clear that record."
             : ""
-        alert.informativeText = "Target: iPhone12,8 • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\nCoordinate: \(coordinate.latitudeArgument), \(coordinate.longitudeArgument)\n\nThis can affect Maps, navigation, location sharing, and every app that reads location until Return to Real Location is sent. Apps may detect that the location is simulated. iOS provides no getter to verify the active coordinate.\(persistenceWarning)"
+        alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\nCoordinate: \(coordinate.latitudeArgument), \(coordinate.longitudeArgument)\n\nThis can affect Maps, navigation, location sharing, and every app that reads location until Return to Real Location is sent. Apps may detect that the location is simulated. iOS provides no getter to verify the active coordinate.\(persistenceWarning)"
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: isPersistent ? "Set Experimental Persistent Location" : "Set Test Location")
         return alert.runModal() == .alertSecondButtonReturn
@@ -554,7 +554,7 @@ final class RecoveryModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Request the Developer Mode option in iPhone Settings?"
-        alert.informativeText = "Target: iPhone12,8 • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\n\nPairing and Trust were freshly verified before this dialog and will be verified again after confirmation. YIOS-KIT will send one non-reboot Apple request to this exact target. It does not enable Developer Mode, restart or erase the iPhone, change the simulated location, retry automatically, or target another device.\n\nAfter the request is accepted, reopen Settings > Privacy & Security. You must still turn on Developer Mode yourself and approve Apple's restart and on-device confirmation."
+        alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\n\nPairing and Trust were freshly verified before this dialog and will be verified again after confirmation. YIOS-KIT will send one non-reboot Apple request to this exact target. It does not enable Developer Mode, restart or erase the iPhone, change the simulated location, retry automatically, or target another device.\n\nAfter the request is accepted, reopen Settings > Privacy & Security. You must still turn on Developer Mode yourself and approve Apple's restart and on-device confirmation."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Request Settings Option")
         return alert.runModal() == .alertSecondButtonReturn
@@ -582,7 +582,7 @@ final class RecoveryModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Send a reset to the currently connected iPhone?"
-        alert.informativeText = "The previous Mock Location journal is unreadable, so YIOS-KIT cannot prove which iPhone was used before the interruption.\n\nCurrent target: iPhone12,8 • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\n\nThis sends only Return to Real Location to this exact, freshly verified target. It does not erase data, change Developer Mode, or retry automatically."
+        alert.informativeText = "The previous Mock Location journal is unreadable, so YIOS-KIT cannot prove which iPhone was used before the interruption.\n\nCurrent target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\n\nThis sends only Return to Real Location to this exact, freshly verified target. It does not erase data, change Developer Mode, or retry automatically."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Send Reset to This iPhone")
         return alert.runModal() == .alertSecondButtonReturn

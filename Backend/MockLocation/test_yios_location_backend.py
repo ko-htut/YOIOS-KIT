@@ -60,11 +60,22 @@ def run_captured(module, coroutine):
     return result, [json.loads(line) for line in lines]
 
 
-def fake_imports(trace, set_error=None, dvt_close_error=None, tunnel_close_error=None):
+def fake_imports(
+    trace,
+    set_error=None,
+    dvt_close_error=None,
+    tunnel_close_error=None,
+    reported_product_type="iPhone12,8",
+    reported_udid=TEST_UDID,
+    product_version="17.7",
+    allow_clear=False,
+):
     class FakeRSD:
-        udid = TEST_UDID
-        product_type = "iPhone12,8"
-        product_version = "17.7"
+        udid = reported_udid
+        product_type = reported_product_type
+
+        def __init__(self):
+            self.product_version = product_version
 
         async def get_developer_mode_status(self):
             trace.append("developer-mode")
@@ -115,7 +126,7 @@ def fake_imports(trace, set_error=None, dvt_close_error=None, tunnel_close_error
                 raise set_error
 
         async def clear(self):
-            trace.append("FORBIDDEN-clear")
+            trace.append("location-clear" if allow_clear else "FORBIDDEN-clear")
 
     class FakeImports:
         UserspaceRsdTunnel = FakeTunnel
@@ -141,15 +152,18 @@ def fake_reveal_imports(
     paired=True,
     reported_ecid=TEST_ECID,
     reveal_error=None,
+    reported_product_type="iPhone12,8",
+    reported_udid=TEST_UDID,
+    product_version="17.7",
 ):
     class FakeLockdown:
-        udid = TEST_UDID
-        identifier = TEST_UDID
-        product_type = "iPhone12,8"
-        product_version = "17.7"
+        udid = reported_udid
+        identifier = reported_udid
+        product_type = reported_product_type
 
         def __init__(self):
             self.paired = paired
+            self.product_version = product_version
 
         @property
         def ecid(self):
@@ -303,6 +317,128 @@ def assert_invalid_reveal_request(module, request, trace):
     assert trace == ["event:error"]
 
 
+def operation_request(command, product_type):
+    request = {"udid": TEST_UDID, "expectedProductType": product_type}
+    if command in ("set", "set-persistent"):
+        request.update(latitude="16.8409", longitude="96.1735")
+    elif command == "reveal-developer-mode":
+        request["expectedECID"] = TEST_ECID_TEXT
+    return request
+
+
+def assert_generic_iphone_targets(module, trace):
+    # These are identity-policy fixtures, not claims that every older model
+    # can run the required iOS build. OS capability is checked independently.
+    product_types = (
+        "iPhone8,4", "iPhone9,3", "iPhone11,8", "iPhone12,8",
+        "iPhone13,1", "iPhone15,2", "iPhone17,2", "iPhone99,9", "iPhone1,0",
+    )
+    commands = ("probe", "set", "set-persistent", "clear", "reveal-developer-mode")
+    original_read_stdin_line = module.read_stdin_line
+
+    async def clear_live_session():
+        return b'{"command":"clear"}\n'
+
+    module.read_stdin_line = clear_live_session
+    try:
+        for product_type in product_types:
+            assert module.parse_product_type(product_type) == product_type
+            for command in commands:
+                trace.clear()
+                imports = (
+                    fake_reveal_imports(trace, reported_product_type=product_type)
+                    if command == "reveal-developer-mode"
+                    else fake_imports(trace, reported_product_type=product_type, allow_clear=True)
+                )
+                status, events = run_captured(
+                    module,
+                    module.execute(command, operation_request(command, product_type), imports),
+                )
+                assert status == 0, (command, product_type, events)
+                attested = [event for event in events if event["event"] == "attested"]
+                assert len(attested) == 1
+                assert attested[0]["product_type"] == product_type
+                assert all(event["event"] != "error" for event in events)
+                assert TEST_UDID not in json.dumps(events)
+                if command == "probe":
+                    assert "location-set" not in trace and "location-clear" not in trace
+                elif command == "set":
+                    assert trace.count("location-set") == 1
+                    assert trace.count("location-clear") == 1
+                elif command == "set-persistent":
+                    assert trace.count("location-set") == 1
+                    assert "location-clear" not in trace
+                elif command == "clear":
+                    assert "location-set" not in trace
+                    assert trace.count("location-clear") == 1
+                else:
+                    assert trace.count("amfi-reveal") == 1
+
+        for invalid_product in (
+            None, True, 12, "", "iPad13,1", "iPod9,1", "AppleTV6,2",
+            "iphone13,1", " iPhone13,1", "iPhone13,1 ", "iPhone13,1\n",
+            "iPhone0,1", "iPhone01,1", "iPhone13,01", "iPhone13,-1",
+            "iPhone13,+1", "iPhone١٣,1", "iPhone13,1;clear", "iPhone13,1,2",
+            "iPhone9223372036854775808,1", "iPhone1,9223372036854775808",
+            "iPhone" + "9" * 40 + ",1",
+        ):
+            assert module.parse_product_type(invalid_product) is None
+            for command in commands:
+                trace.clear()
+                imports = fake_reveal_imports(trace) if command == "reveal-developer-mode" else fake_imports(trace)
+                status, events = run_captured(
+                    module,
+                    module.execute(command, operation_request(command, invalid_product), imports),
+                )
+                assert status == 2, (command, invalid_product, events)
+                assert len(events) == 1 and events[0]["code"] == "invalid_request"
+                assert trace == ["event:error"]
+
+        # Accepting all iPhone models never permits a different matching-class
+        # phone to receive the request. Identity must agree before opening DVT
+        # or dispatching the AMFI Settings request.
+        for command in commands:
+            for mismatch in (
+                {"reported_product_type": "iPhone15,2"},
+                {"reported_product_type": "iPad13,1"},
+                {"reported_product_type": None},
+                {"reported_udid": "00008030-00123456789ABCDF"},
+            ):
+                trace.clear()
+                imports = (
+                    fake_reveal_imports(trace, **mismatch)
+                    if command == "reveal-developer-mode"
+                    else fake_imports(trace, **mismatch)
+                )
+                status, events = run_captured(
+                    module,
+                    module.execute(command, operation_request(command, "iPhone13,1"), imports),
+                )
+                assert status == 3, (command, mismatch, events)
+                assert events[-1]["code"] == "target_mismatch"
+                assert all(event["event"] not in ("attested", "ready", "requestDispatched") for event in events)
+                assert "dvt-init" not in trace and "amfi-reveal" not in trace
+                assert "location-set" not in trace and "FORBIDDEN-clear" not in trace
+
+        for command in commands:
+            for os_version in ("15.8", "17.3", None, "invalid"):
+                trace.clear()
+                imports = (
+                    fake_reveal_imports(trace, product_version=os_version)
+                    if command == "reveal-developer-mode"
+                    else fake_imports(trace, product_version=os_version)
+                )
+                status, events = run_captured(
+                    module,
+                    module.execute(command, operation_request(command, "iPhone12,8"), imports),
+                )
+                assert status == 3, (command, os_version, events)
+                assert all(event["event"] not in ("attested", "ready", "requestDispatched") for event in events)
+                assert "dvt-init" not in trace and "amfi-reveal" not in trace
+    finally:
+        module.read_stdin_line = original_read_stdin_line
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: test-yios-location-backend.py BRIDGE")
@@ -370,7 +506,7 @@ def main():
     assert_invalid_request(module, invalid_coordinate, trace)
 
     wrong_product = dict(request)
-    wrong_product["expectedProductType"] = "iPhone99,9"
+    wrong_product["expectedProductType"] = "iPad13,1"
     assert_invalid_request(module, wrong_product, trace)
 
     # A failure after requestDispatched must be one-shot: one Set attempt, no
@@ -548,7 +684,9 @@ def main():
         tunnel_close_error=OSError("synthetic tunnel close detail"),
     )
 
-    print("LOCATION BACKEND OFFLINE SET-PERSISTENT + DEVELOPER-MODE-OPTION TEST PASS")
+    assert_generic_iphone_targets(module, trace)
+
+    print("LOCATION BACKEND OFFLINE GENERIC-IPHONE + SET-PERSISTENT + DEVELOPER-MODE-OPTION TEST PASS")
 
 
 if __name__ == "__main__":

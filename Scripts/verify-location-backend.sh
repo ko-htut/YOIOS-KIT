@@ -100,7 +100,10 @@ source_checksum="$(/usr/bin/shasum -a 256 "${resources_dir}/Source/pymobiledevic
 # retry, use a raw AMFI plist action, or fall back to RemotePairing.
 /usr/bin/grep -Fq 'autopair=False' "$bridge" || fail "autopair must remain disabled"
 /usr/bin/grep -Fq 'remotepairing_fallback=False' "$bridge" || fail "RemotePairing fallback must remain disabled"
-/usr/bin/grep -Fq 'EXPECTED_PRODUCT_TYPE = "iPhone12,8"' "$bridge" || fail "model restriction is missing"
+/usr/bin/grep -Fq 'IPHONE_PRODUCT_TYPE_PATTERN' "$bridge" || fail "iPhone ProductType validation is missing"
+/usr/bin/grep -Fq 'parse_product_type(request.get("expectedProductType"))' "$bridge" || fail "requested iPhone identity validation is missing"
+/usr/bin/grep -Fq 'getattr(rsd, "product_type", None) != expected_product_type' "$bridge" || fail "exact RSD ProductType attestation is missing"
+/usr/bin/grep -Fq 'getattr(lockdown, "product_type", None) != expected_product_type' "$bridge" || fail "exact lockdown ProductType attestation is missing"
 /usr/bin/grep -Fq 'get_developer_mode_status' "$bridge" || fail "Developer Mode readiness check is missing"
 /usr/bin/grep -Fq 'connection_type="USB"' "$bridge" || fail "Developer Mode reveal must stay on exact USB"
 /usr/bin/grep -Fq 'expectedECID' "$bridge" || fail "Developer Mode reveal ECID attestation is missing"
@@ -190,7 +193,7 @@ line_count="$(print -r -- "$version_output" | /usr/bin/wc -l | /usr/bin/tr -d ' 
 import json, sys
 value = json.loads(sys.argv[1])
 assert value == {
-    "backend_version": "1.1.0",
+    "backend_version": "1.2.0",
     "event": "hello",
     "protocol": 1,
     "protocol_version": 1,

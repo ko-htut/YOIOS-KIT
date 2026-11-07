@@ -8,25 +8,37 @@ upstream error text, tracebacks, and pairing records are never returned.
 
 Protocol version: `1`
 
+Backend version: `1.2.0`
+
+The backend accepts any syntactically valid iPhone ProductType rather than a
+model allowlist. `expectedProductType` is the exact ProductType freshly read
+from the selected iPhone, not a device-class wildcard: a request for
+`iPhone15,2` cannot be attested by another iPhone model. Canonical values have
+the form `iPhone<positive integer>,<nonnegative integer>`, with no leading
+zeroes, spaces, alternate casing, or extra suffix. Non-iPhone devices are
+rejected. The current transport still requires iOS 17.4 or later, existing
+Trust, Developer Mode, and available matching developer services; accepting a
+model identifier does not imply that older hardware can run the required OS.
+
 ## Requests
 
 `probe` and `clear` accept exactly:
 
 ```json
-{"udid":"<exact connected UDID>","expectedProductType":"iPhone12,8"}
+{"udid":"<exact connected UDID>","expectedProductType":"iPhone15,2"}
 ```
 
 `set` and the distinct opt-in `set-persistent` experiment also require finite
 decimal coordinates:
 
 ```json
-{"udid":"<exact connected UDID>","expectedProductType":"iPhone12,8","latitude":"16.8409","longitude":"96.1735"}
+{"udid":"<exact connected UDID>","expectedProductType":"iPhone15,2","latitude":"16.8409","longitude":"96.1735"}
 ```
 
 The Settings-only Developer Mode preparation request accepts exactly:
 
 ```json
-{"udid":"<exact connected UDID>","expectedProductType":"iPhone12,8","expectedECID":"0x<1-16 uppercase hex digits>"}
+{"udid":"<exact connected UDID>","expectedProductType":"iPhone15,2","expectedECID":"0x<1-16 uppercase hex digits>"}
 ```
 
 `reveal-developer-mode` opens only the direct USB lockdown connection with

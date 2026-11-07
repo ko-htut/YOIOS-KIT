@@ -39,6 +39,7 @@ download_and_verify() {
     print -- "Using cached ${filename}"
     return
   fi
+  [[ "${YIOS_LOCATION_OFFLINE:-0}" != "1" ]] || fail "verified cached artifact is required in offline mode: ${filename}"
 
   local partial="${destination}.partial.$$"
   /bin/rm -f "$partial"
@@ -65,11 +66,17 @@ download_and_verify "$pymobiledevice_source" "$pymobiledevice_source_url" "$pymo
 
 # Resolve the version lock into a persistent wheel/source cache, then require an
 # exact filename set and SHA-256 match before any artifact is installed.
+typeset -a dependency_download_options
+dependency_download_options=()
+if [[ "${YIOS_LOCATION_OFFLINE:-0}" == "1" ]]; then
+  dependency_download_options=(--no-index --find-links "$artifact_cache")
+fi
 PIP_DISABLE_PIP_VERSION_CHECK=1 \
 PIP_CACHE_DIR="${cache_dir}/pip" \
 PYTHONNOUSERSITE=1 \
   "$python" -m pip download \
     --disable-pip-version-check \
+    "${dependency_download_options[@]}" \
     --dest "$artifact_cache" \
     --requirement "${backend_source}/requirements-python39.lock"
 "$python" - "$artifact_cache" "${backend_source}/dependency-artifacts.sha256" <<'PY'
@@ -167,7 +174,7 @@ for metadata_path in sorted(root.glob("*.dist-info/METADATA")):
     })
 
 manifest = {
-    "backendVersion": "1.1.0",
+    "backendVersion": "1.2.0",
     "protocolVersion": 1,
     "pythonRuntime": "/usr/bin/python3 3.9",
     "target": "arm64-apple-macos",

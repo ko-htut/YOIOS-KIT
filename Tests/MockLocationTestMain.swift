@@ -20,6 +20,7 @@ struct MockLocationTestMain {
 
         testCoordinates(expect: expect)
         testExactTarget(expect: expect)
+        testGenericTargets(expect: expect)
         testJournal(expect: expect)
         testBackendCommand(expect: expect)
         testBackendProtocol(expect: expect)
@@ -29,6 +30,7 @@ struct MockLocationTestMain {
         testDeveloperModeStablePinRecoveryGate(expect: expect)
         testForgetUnavailableRecord(expect: expect)
         testControllerLifecycle(expect: expect)
+        testGenericControllerAttestation(expect: expect)
         testPersistentFailureLifecycle(expect: expect)
         testPersistentClearGuards(expect: expect)
         testOutOfOrderActiveKeepsDeadline(expect: expect)
@@ -79,7 +81,7 @@ struct MockLocationTestMain {
         }
     }
 
-    private static func targetFixture() -> DeviceSnapshot {
+    private static func targetFixture(productType: String = "iPhone12,8") -> DeviceSnapshot {
         DeviceSnapshot(
             mode: .normal,
             deviceCount: 1,
@@ -87,8 +89,8 @@ struct MockLocationTestMain {
             locationID: 1_048_576,
             ecid: "0x123456789ABCDE",
             udid: "00008030-00123456789ABCDE",
-            productType: "iPhone12,8",
-            hardwareModel: "d79ap",
+            productType: productType,
+            hardwareModel: productType == "iPhone12,8" ? "d79ap" : nil,
             productVersion: "17.7",
             buildVersion: "21H16",
             activationState: "Activated",
@@ -104,6 +106,8 @@ struct MockLocationTestMain {
         }
         expect(target.matches(snapshot), "exact target must match the unchanged verified snapshot")
         expect(target.pin.fingerprint.count == 64, "target pin must be a SHA-256 fingerprint")
+        expect(target.pin.fingerprint == "225c9b6d88ef87b0d43fff786436a8476ab2dd26ece32940019f145d62c79d70", "existing SE2 connection fingerprints must remain backward-compatible")
+        expect(target.stablePin.fingerprint == "0d8ff32e4e4ec48838d3bacfd3425b444bf65c3143b6741bf05ca7ba76108283", "existing SE2 stable fingerprints must remain backward-compatible")
         expect(!target.pin.displayToken.contains("89ABCDE"), "display token must not expose the synthetic ECID suffix")
         expect(!target.pin.displayToken.contains("56789ABCDE"), "display token must not expose the synthetic UDID suffix")
 
@@ -122,6 +126,74 @@ struct MockLocationTestMain {
         changed = snapshot
         changed.deviceCount = 2
         expect(!target.matches(changed), "multiple devices must invalidate the exact target")
+    }
+
+    private static func testGenericTargets(expect: (Bool, String) -> Void) {
+        let products = ["iPhone8,4", "iPhone10,4", "iPhone12,1", "iPhone12,8", "iPhone13,1", "iPhone15,4", "iPhone18,3", "iPhone99,9", "iPhone19,0"]
+        var connectionPins = Set<MockLocationTargetPin>()
+        var stablePins = Set<MockLocationTargetPin>()
+        for product in products {
+            var snapshot = targetFixture()
+            snapshot.productType = product
+            snapshot.hardwareModel = nil
+            snapshot.chipID = nil
+            snapshot.boardID = nil
+            guard let target = try? MockLocationExactTarget(snapshot: snapshot) else {
+                expect(false, "generic verified iPhone \(product) must not require SE2 or a hardware catalog entry")
+                continue
+            }
+            expect(target.productType == product && target.matches(snapshot), "generic target must preserve its exact ProductType")
+            expect(MockLocationExactTarget.stablePin(for: snapshot) == target.stablePin, "generic stable pin must preserve exact product identity")
+            connectionPins.insert(target.pin)
+            stablePins.insert(target.stablePin)
+            var swappedProduct = snapshot
+            swappedProduct.productType = product == "iPhone15,4" ? "iPhone13,1" : "iPhone15,4"
+            expect(!target.matches(swappedProduct), "a different valid iPhone ProductType must never match the pinned target")
+            var changedPort = snapshot
+            changedPort.locationID = 2_097_152
+            expect(!target.matches(changedPort), "generic exact pin must still reject a changed USB connection")
+            expect(MockLocationExactTarget.stablePin(for: changedPort) == target.stablePin, "generic stable pin must survive only a connection change")
+        }
+        expect(connectionPins.count == products.count && stablePins.count == products.count, "different iPhone ProductTypes must produce distinct connection and stable pins")
+
+        let invalidSnapshots: [(String, (inout DeviceSnapshot) -> Void)] = [
+            ("no device", { $0.deviceCount = 0 }),
+            ("multiple devices", { $0.deviceCount = 2 }),
+            ("Recovery", { $0.mode = .recovery }),
+            ("DFU", { $0.mode = .dfu }),
+            ("unverified Normal iOS", { $0.modeVerified = false }),
+            ("identity conflict", { $0.identityConflict = true }),
+            ("missing ECID", { $0.ecid = nil }),
+            ("zero ECID", { $0.ecid = "0" }),
+            ("invalid ECID", { $0.ecid = "not-an-ecid" }),
+            ("missing UDID", { $0.udid = nil }),
+            ("empty UDID", { $0.udid = "" }),
+            ("malformed UDID", { $0.udid = "bad udid" }),
+            ("short UDID", { $0.udid = "short" }),
+            ("oversized UDID", { $0.udid = String(repeating: "A", count: 65) }),
+            ("missing USB location", { $0.locationID = nil }),
+            ("invalid USB location", { $0.locationID = -1 }),
+            ("missing ProductType", { $0.productType = nil }),
+            ("empty ProductType", { $0.productType = "" }),
+            ("non-iPhone", { $0.productType = "iPad13,1" }),
+            ("zero major", { $0.productType = "iPhone0,1" }),
+            ("leading-zero major", { $0.productType = "iPhone013,1" }),
+            ("leading-zero minor", { $0.productType = "iPhone13,01" }),
+            ("padded ProductType", { $0.productType = " iPhone13,1" }),
+            ("newline ProductType", { $0.productType = "iPhone13,1\n" }),
+            ("overflowing major", { $0.productType = "iPhone9223372036854775808,1" }),
+            ("overflowing minor", { $0.productType = "iPhone13,9223372036854775808" }),
+            ("oversized ProductType", { $0.productType = "iPhone" + String(repeating: "9", count: 30) + ",1" })
+        ]
+        for (name, mutate) in invalidSnapshots {
+            var invalid = targetFixture()
+            invalid.productType = "iPhone18,3"
+            mutate(&invalid)
+            expect((try? MockLocationExactTarget(snapshot: invalid)) == nil, "generic target must reject \(name)")
+        }
+        var conflicted = targetFixture()
+        conflicted.identityConflict = true
+        expect(MockLocationExactTarget.stablePin(for: conflicted) == nil, "stable pin must not accept conflicting identity evidence")
     }
 
     private static func testJournal(expect: (Bool, String) -> Void) {
@@ -262,6 +334,27 @@ struct MockLocationTestMain {
         expect(developerModeObject?["expectedProductType"] as? String == target.productType, "Developer Mode request must pin ProductType")
         expect(developerModeObject?["expectedECID"] as? String == target.ecid, "Developer Mode request must pin canonical ECID")
         expect(developerModeObject?.count == 3, "Developer Mode request must not contain coordinates or unreviewed fields")
+
+        var genericSnapshot = targetFixture()
+        genericSnapshot.productType = "iPhone18,3"
+        genericSnapshot.hardwareModel = nil
+        guard let genericTarget = try? MockLocationExactTarget(snapshot: genericSnapshot) else {
+            expect(false, "generic command fixture must initialize")
+            return
+        }
+        let genericCommands = [
+            MockLocationCommandBuilder.probe(backend: backend, target: genericTarget),
+            MockLocationCommandBuilder.set(backend: backend, target: genericTarget, coordinate: coordinate),
+            MockLocationCommandBuilder.setPersistent(backend: backend, target: genericTarget, coordinate: coordinate),
+            MockLocationCommandBuilder.clear(backend: backend, target: genericTarget),
+            MockLocationCommandBuilder.revealDeveloperMode(backend: backend, target: genericTarget)
+        ]
+        for genericCommand in genericCommands {
+            let request = try? JSONSerialization.jsonObject(with: Data(genericCommand.initialRequest.dropLast())) as? [String: Any]
+            expect(request?["expectedProductType"] as? String == genericTarget.productType, "every generic operation must pin the requested ProductType over stdin")
+            expect(request?["udid"] as? String == genericTarget.udid, "every generic operation must pin the requested UDID over stdin")
+            expect(!genericCommand.arguments.joined().contains(genericTarget.udid), "generic identifiers must remain absent from process argv")
+        }
     }
 
     private static func testBackendProtocol(expect: (Bool, String) -> Void) {
@@ -282,6 +375,23 @@ struct MockLocationTestMain {
             expect(event.kind == .attested, "accepted target event must normalize to attested")
         } else {
             expect(false, "accepted target event should parse")
+        }
+
+        for product in ["iPhone8,4", "iPhone15,4", "iPhone18,3", "iPhone19,0"] {
+            let result = MockLocationBackendEventParser.parse(line: "{\"event\":\"attested\",\"product_type\":\"\(product)\"}")
+            if case .success(let event) = result {
+                expect(event.kind == .attested && event.productType == product, "generic backend product attestation must preserve exact syntax")
+            } else {
+                expect(false, "valid generic attestation \(product) should parse")
+            }
+        }
+        for product in ["iPad13,1", "iPhone", "iPhone0,1", "iPhone13,01", " iPhone13,1", "iPhone13,1 ", "iPhone9223372036854775808,1", "iPhone13,9223372036854775808"] {
+            let result = MockLocationBackendEventParser.parse(line: "{\"event\":\"attested\",\"product_type\":\"\(product)\"}")
+            if case .failure(.invalidEvent) = result {
+                expect(true, "invalid product attestation must fail closed")
+            } else {
+                expect(false, "malformed or non-iPhone attestation \(product) must be rejected")
+            }
         }
 
         let phase = MockLocationBackendEventParser.parse(
@@ -861,7 +971,7 @@ exit 2
         expect(cleanController.simulationKnowledge == .notRequested && !cleanController.blocksDeviceMutation, "a clean controller must remain unlocked after a no-op Forget call")
     }
 
-    private static func testControllerLifecycle(expect: (Bool, String) -> Void) {
+    private static func testControllerLifecycle(productType: String = "iPhone12,8", expect: (Bool, String) -> Void) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("YIOS-MockLocation-Lifecycle-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -896,7 +1006,7 @@ case "$1" in
     ;;
 esac
 exit 2
-"""#
+"""#.replacingOccurrences(of: "iPhone12,8", with: productType)
         do {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             try Data(script.utf8).write(to: executable)
@@ -923,7 +1033,7 @@ exit 2
             journal: journal,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
         )
-        var snapshot = targetFixture()
+        var snapshot = targetFixture(productType: productType)
         var preflightCount = 0
         var confirmationCount = 0
         var persistentConfirmationCount = 0
@@ -1014,7 +1124,7 @@ exit 2
         expect(journalRecord?.state == .assumedPersistent, "disconnect must not remove or downgrade the persistent journal")
         expect(!controller.canReturnToRealLocation, "Clear must remain unavailable while the pinned phone is disconnected")
 
-        var wrongPhone = targetFixture()
+        var wrongPhone = targetFixture(productType: productType)
         wrongPhone.ecid = "0xABCDEF12345678"
         wrongPhone.udid = "00008030-00ABCDEF12345678"
         snapshot = wrongPhone
@@ -1022,7 +1132,7 @@ exit 2
         expect(controller.isAssumedPersistent, "a different connected phone must not take ownership of the original persistent record")
         expect(!controller.canReturnToRealLocation, "a different phone must never be eligible for Clear")
 
-        var reconnected = targetFixture()
+        var reconnected = targetFixture(productType: productType)
         reconnected.locationID = 2_097_152
         snapshot = reconnected
         controller.refreshLocalState()
@@ -1086,6 +1196,99 @@ exit 2
             secondTrustFailure.lastError == MockLocationReadinessIssue.pairingRequired.userDescription,
             "a failed second Trust check must report the pairing requirement"
         )
+    }
+
+    private static func testGenericControllerAttestation(expect: (Bool, String) -> Void) {
+        testControllerLifecycle(productType: "iPhone18,3", expect: expect)
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-Generic-Location-Attestation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let wrongProductExecutable = root.appendingPathComponent("wrong-product-backend")
+        let exactProductExecutable = root.appendingPathComponent("exact-product-backend")
+        let script = #"""
+#!/bin/zsh
+IFS= read -r initial_request
+/usr/bin/printf '%s\n' '{"event":"hello","protocol":1,"backend_version":"fixture-generic"}'
+/usr/bin/printf '%s\n' '{"event":"attested","product_type":"iPhone15,4"}'
+/usr/bin/printf '%s\n' '{"event":"ready"}'
+exit 0
+"""#
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data(script.utf8).write(to: wrongProductExecutable)
+            try Data(script.replacingOccurrences(of: "iPhone15,4", with: "iPhone18,3").utf8).write(to: exactProductExecutable)
+            for executable in [wrongProductExecutable, exactProductExecutable] {
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+            }
+        } catch {
+            expect(false, "generic attestation fixture could not be created: \(error)")
+            return
+        }
+
+        let snapshot = targetFixture(productType: "iPhone18,3")
+        var wrongProductWrites = 0
+        let wrongProductController = MockLocationController(
+            resolveBackend: { .success(MockLocationBackendDescriptor(executableURL: wrongProductExecutable)) },
+            journal: MockLocationJournalClient(
+                load: { nil },
+                write: { _ in wrongProductWrites += 1 },
+                remove: { wrongProductWrites += 1 }
+            )
+        )
+        wrongProductController.configureHost(.init(
+            currentSnapshot: { snapshot },
+            hostGate: { .idle },
+            requestFreshEvidence: { completion in
+                completion(MockLocationFreshEvidence(snapshot: snapshot, pairingAndTrustVerified: true))
+            },
+            confirmForgetUnavailableRecord: { _ in false },
+            confirmDeveloperModeOptionRequest: { _ in false },
+            confirmSet: { _, _, _ in true },
+            confirmUnpinnedClear: { _ in false },
+            confirmReconnectedClear: { _, _ in false }
+        ))
+        wrongProductController.checkReadiness()
+        waitUntil(timeout: 3) { !wrongProductController.isBusy }
+        expect(wrongProductController.readiness == .failed(.backendProtocolError), "another syntactically valid iPhone from the backend must fail exact ProductType attestation")
+        expect(!wrongProductController.canSetLocation && wrongProductWrites == 0, "wrong-other-iPhone attestation must neither enable Set nor write a mutation journal")
+
+        var freshEvidenceCount = 0
+        var swapConfirmations = 0
+        var swapWrites = 0
+        let swappingController = MockLocationController(
+            resolveBackend: { .success(MockLocationBackendDescriptor(executableURL: exactProductExecutable)) },
+            journal: MockLocationJournalClient(
+                load: { nil },
+                write: { _ in swapWrites += 1 },
+                remove: { swapWrites += 1 }
+            )
+        )
+        swappingController.configureHost(.init(
+            currentSnapshot: { snapshot },
+            hostGate: { .idle },
+            requestFreshEvidence: { completion in
+                freshEvidenceCount += 1
+                var fresh = snapshot
+                if freshEvidenceCount == 3 { fresh.productType = "iPhone15,4" }
+                completion(MockLocationFreshEvidence(snapshot: fresh, pairingAndTrustVerified: true))
+            },
+            confirmForgetUnavailableRecord: { _ in false },
+            confirmDeveloperModeOptionRequest: { _ in false },
+            confirmSet: { _, _, _ in swapConfirmations += 1; return true },
+            confirmUnpinnedClear: { _ in false },
+            confirmReconnectedClear: { _, _ in false }
+        ))
+        swappingController.checkReadiness()
+        waitUntil(timeout: 3) { !swappingController.isBusy }
+        expect(swappingController.canSetLocation, "an exact generic ProductType attestation must enable Set")
+        if let coordinate = try? MockLocationCoordinate(latitude: 1, longitude: 2) {
+            swappingController.setLocation(coordinate)
+        }
+        waitUntil(timeout: 3) { !swappingController.isBusy }
+        expect(freshEvidenceCount == 3 && swapConfirmations == 1, "generic Set must preserve both fresh target checks around confirmation")
+        expect(swapWrites == 0 && !swappingController.isAssumedActive, "post-confirmation ProductType swap must block dispatch before any mutation journal")
+        expect(swappingController.lastError == MockLocationReadinessIssue.targetChanged.userDescription, "generic post-confirmation target swap must report the exact-target change")
     }
 
     private static func testPersistentFailureLifecycle(expect: (Bool, String) -> Void) {
