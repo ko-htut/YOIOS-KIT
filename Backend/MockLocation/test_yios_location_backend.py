@@ -12,6 +12,8 @@ import json
 import os
 import pathlib
 import sys
+from types import SimpleNamespace
+from typing import Optional
 
 
 TEST_UDID = "00008030-00123456789ABCDE"
@@ -69,10 +71,20 @@ def fake_imports(
     reported_udid=TEST_UDID,
     product_version="17.7",
     allow_clear=False,
+    transport="usb",
+    reported_ecid=TEST_ECID,
+    lockdown_product_type=None,
+    lockdown_ecid=None,
+    paired=True,
+    connection_lost=False,
+    lockdown_connection_type="Network",
+    dvt_close_blocks=False,
+    tunnel_close_blocks=False,
 ):
     class FakeRSD:
         udid = reported_udid
         product_type = reported_product_type
+        ecid = reported_ecid
 
         def __init__(self):
             self.product_version = product_version
@@ -82,10 +94,12 @@ def fake_imports(
             return True
 
     class FakeTunnel:
-        def __init__(self, serial, autopair, remotepairing_fallback):
+        def __init__(self, serial, autopair, remotepairing_fallback, connection_type, auto_reconnect):
             assert serial == TEST_UDID
             assert autopair is False
+            assert auto_reconnect is False
             assert remotepairing_fallback is False
+            assert connection_type == ("Network" if transport == "wifi" else "USB")
             trace.append("tunnel-init")
 
         async def aopen(self):
@@ -94,8 +108,15 @@ def fake_imports(
 
         async def aclose(self):
             trace.append("tunnel-close")
+            if tunnel_close_blocks:
+                await asyncio.Event().wait()
             if tunnel_close_error is not None:
                 raise tunnel_close_error
+
+        async def wait_closed(self):
+            trace.append("transport-wait")
+            if not connection_lost:
+                await asyncio.Event().wait()
 
     class FakeDVT:
         def __init__(self, rsd):
@@ -107,6 +128,8 @@ def fake_imports(
 
         async def close(self):
             trace.append("dvt-close")
+            if dvt_close_blocks:
+                await asyncio.Event().wait()
             if dvt_close_error is not None:
                 raise dvt_close_error
 
@@ -143,7 +166,25 @@ def fake_imports(
         amfi_errors = ()
         connection_errors = ()
 
-    return FakeImports()
+    imports = FakeImports()
+    async def create_using_usbmux(**kwargs):
+        assert transport == "wifi"
+        assert kwargs == {
+            "serial": TEST_UDID, "connection_type": "Network", "autopair": False,
+            "auto_reconnect": False,
+        }
+        trace.append("network-lockdown-open")
+        async def close():
+            trace.append("network-lockdown-close")
+        return SimpleNamespace(
+            udid=reported_udid,
+            product_type=lockdown_product_type or reported_product_type,
+            ecid=reported_ecid if lockdown_ecid is None else lockdown_ecid,
+            product_version=product_version, paired=paired, close=close,
+            service=SimpleNamespace(mux_device=SimpleNamespace(connection_type=lockdown_connection_type)),
+        )
+    imports.create_using_usbmux = create_using_usbmux
+    return imports
 
 
 def fake_reveal_imports(
@@ -155,6 +196,9 @@ def fake_reveal_imports(
     reported_product_type="iPhone12,8",
     reported_udid=TEST_UDID,
     product_version="17.7",
+    wifi_enabled=False,
+    wifi_error=None,
+    wifi_setting_sticks=True,
 ):
     class FakeLockdown:
         udid = reported_udid
@@ -164,6 +208,8 @@ def fake_reveal_imports(
         def __init__(self):
             self.paired = paired
             self.product_version = product_version
+            self.service = SimpleNamespace(mux_device=SimpleNamespace(connection_type="USB"))
+            self.wifi_enabled = wifi_enabled
 
         @property
         def ecid(self):
@@ -176,6 +222,18 @@ def fake_reveal_imports(
         async def close(self):
             trace.append("lockdown-close")
 
+        async def get_enable_wifi_connections(self):
+            trace.append("wifi-status")
+            return self.wifi_enabled
+
+        async def set_enable_wifi_connections(self, value):
+            assert value is True
+            trace.append("wifi-enable")
+            if wifi_error is not None:
+                raise wifi_error
+            if wifi_setting_sticks:
+                self.wifi_enabled = value
+
     lockdown = FakeLockdown()
 
     async def create_using_usbmux(**kwargs):
@@ -183,6 +241,7 @@ def fake_reveal_imports(
             "serial": TEST_UDID,
             "connection_type": "USB",
             "autopair": False,
+            "auto_reconnect": False,
         }
         trace.append("lockdown-open")
         return lockdown
@@ -213,6 +272,9 @@ def fake_reveal_imports(
         invalid_service_errors = ()
         amfi_errors = ()
         connection_errors = ()
+        userspace_errors = ()
+        developer_mode_errors = ()
+        device_busy_errors = ()
 
     imports = FakeImports()
     imports.create_using_usbmux = create_using_usbmux
@@ -439,9 +501,378 @@ def assert_generic_iphone_targets(module, trace):
         module.read_stdin_line = original_read_stdin_line
 
 
+def assert_wifi_contract(module, trace):
+    identity = {
+        "udid": TEST_UDID, "expectedProductType": "iPhone12,8",
+        "expectedECID": TEST_ECID_TEXT,
+    }
+    for already_enabled in (False, True):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "enable-wifi", identity, fake_reveal_imports(trace, wifi_enabled=already_enabled),
+        ))
+        assert status == 0
+        assert [event["event"] for event in events] == [
+            "hello", "attested", "requestDispatched", "wifiEnabled",
+        ]
+        assert events[-1]["status"] == "ok"
+        assert trace.count("wifi-status") == (1 if already_enabled else 2)
+        assert trace.count("wifi-enable") == (0 if already_enabled else 1)
+        assert trace.index("event:attested") < trace.index("wifi-status")
+        assert trace.count("lockdown-close") == 1
+        assert "amfi-reveal" not in trace and "dvt-init" not in trace
+
+    for options, code in (
+        ({"paired": False}, "pairing_required"),
+        ({"reported_ecid": TEST_ECID + 1}, "target_mismatch"),
+        ({"reported_udid": "00008030-00123456789ABCDF"}, "target_mismatch"),
+        ({"reported_product_type": "iPhone15,2"}, "target_mismatch"),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "enable-wifi", identity, fake_reveal_imports(trace, **options),
+        ))
+        assert status == 3 and events[-1]["code"] == code
+        assert "wifi-status" not in trace and "wifi-enable" not in trace
+
+    trace.clear()
+    status, events = run_captured(module, module.execute(
+        "enable-wifi", identity,
+        fake_reveal_imports(trace, wifi_error=OSError("private network failure")),
+    ))
+    assert status == 4 and events[-1]["phase"] == "wifiSetup"
+    assert trace.count("wifi-enable") == 1
+    assert "private network failure" not in json.dumps(events)
+
+    trace.clear()
+    status, events = run_captured(module, module.execute(
+        "enable-wifi", identity, fake_reveal_imports(trace, wifi_setting_sticks=False),
+    ))
+    assert status == 4 and events[-1]["phase"] == "wifiSetup"
+    assert all(event["event"] != "wifiEnabled" for event in events)
+    assert trace.count("wifi-enable") == 1 and trace.count("wifi-status") == 2
+
+    async def clear_control():
+        return b'{"command":"clear"}\n'
+    original_reader = module.read_stdin_line
+    module.read_stdin_line = clear_control
+    try:
+        for command in ("probe", "set", "clear"):
+            request = dict(identity, transport="wifi")
+            if command == "set":
+                request.update(latitude="16.8409", longitude="96.1735")
+            trace.clear()
+            status, events = run_captured(module, module.execute(
+                command, request, fake_imports(trace, transport="wifi", allow_clear=True),
+            ))
+            assert status == 0, (command, events)
+            assert trace.index("network-lockdown-open") < trace.index("tunnel-init")
+            assert trace.index("network-lockdown-close") < trace.index("tunnel-init")
+            assert trace.index("tunnel-open") < trace.index("dvt-init")
+            assert trace.count("location-set") == (1 if command == "set" else 0)
+            assert trace.count("location-clear") == (0 if command == "probe" else 1)
+            assert TEST_UDID not in json.dumps(events) and TEST_ECID_TEXT not in json.dumps(events)
+
+        for options, code, tunnel_opened in (
+            ({"paired": False}, "pairing_required", False),
+            ({"lockdown_ecid": TEST_ECID + 1}, "target_mismatch", False),
+            ({"lockdown_product_type": "iPhone15,2"}, "target_mismatch", False),
+            ({"lockdown_connection_type": "USB"}, "target_mismatch", False),
+            ({"reported_ecid": TEST_ECID + 1, "lockdown_ecid": TEST_ECID}, "target_mismatch", True),
+            ({"reported_product_type": "iPhone15,2", "lockdown_product_type": "iPhone12,8"}, "target_mismatch", True),
+        ):
+            trace.clear()
+            request = dict(identity, transport="wifi", latitude="16.8409", longitude="96.1735")
+            status, events = run_captured(module, module.execute(
+                "set", request, fake_imports(trace, transport="wifi", **options),
+            ))
+            assert status == 3 and events[-1]["code"] == code, (options, events)
+            assert ("tunnel-init" in trace) is tunnel_opened
+            assert "dvt-init" not in trace and "location-set" not in trace
+    finally:
+        module.read_stdin_line = original_reader
+
+    original_close_timeout = module.CLOSE_TIMEOUT_SECONDS
+    module.CLOSE_TIMEOUT_SECONDS = 0.01
+    try:
+        trace.clear()
+        request = {"udid": TEST_UDID, "expectedProductType": "iPhone12,8",
+                   "latitude": "16.8409", "longitude": "96.1735"}
+        status, events = run_captured(module, module.execute(
+            "set-persistent", request,
+            fake_imports(trace, dvt_close_blocks=True, tunnel_close_blocks=True),
+        ))
+        assert status == 5 and events[-1]["phase"] == "persistentTeardown"
+        assert trace.count("dvt-close") == 1 and trace.count("tunnel-close") == 1
+        assert "FORBIDDEN-clear" not in trace
+    finally:
+        module.CLOSE_TIMEOUT_SECONDS = original_close_timeout
+
+    # Wi-Fi loss must win over a simultaneously queued Clear. The backend
+    # closes its contexts and reports uncertainty without issuing another RPC.
+    async def blocked_control():
+        await asyncio.Event().wait()
+    module.read_stdin_line = blocked_control
+    try:
+        trace.clear()
+        request = dict(identity, transport="wifi", latitude="16.8409", longitude="96.1735")
+        status, events = run_captured(module, module.execute(
+            "set", request, fake_imports(trace, transport="wifi", connection_lost=True),
+        ))
+        assert status == 5
+        assert events[-1] == {
+            "protocol": 1, "event": "error", "status": "uncertain",
+            "code": "connection_lost", "phase": "transport",
+        }
+        assert trace.count("location-set") == 1
+        assert "location-clear" not in trace and "FORBIDDEN-clear" not in trace
+        assert trace.count("tunnel-open") == 1
+        assert trace.count("dvt-close") == 1 and trace.count("tunnel-close") == 1
+    finally:
+        module.read_stdin_line = original_reader
+
+    # Invalid transport/identity/command combinations fail before any connection.
+    for command, request in (
+        ("probe", dict(identity, transport="USB")),
+        ("probe", dict(identity, transport=None)),
+        ("probe", {"udid": TEST_UDID, "expectedProductType": "iPhone12,8", "transport": "wifi"}),
+        ("probe", dict(identity, transport="wifi", expectedECID="0x0")),
+        ("enable-wifi", dict(identity, transport="wifi")),
+        ("set-persistent", dict(identity, transport="wifi", latitude="16.8409", longitude="96.1735")),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(command, request, fake_imports(trace)))
+        assert status == 2 and events[-1]["code"] == "invalid_request"
+        assert trace == ["event:error"]
+
+    # Exercise the real cancellable pipe reader, including read-ahead, without
+    # a thread, phone, socket, or privileged service.
+    async def exercise_pipe():
+        read_fd, write_fd = os.pipe()
+        old_stdin = sys.stdin
+        sys.stdin = SimpleNamespace(fileno=lambda: read_fd)
+        module._stdin_pending.clear()
+        try:
+            reader = asyncio.create_task(module.read_stdin_line())
+            await asyncio.sleep(0)
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+            os.write(write_fd, b'{"command":"clear"}\n{"command":"quit"}\n')
+            assert await module.read_stdin_line() == b'{"command":"clear"}\n'
+            assert await module.read_stdin_line() == b'{"command":"quit"}\n'
+            os.close(write_fd)
+            write_fd = -1
+            assert await module.read_stdin_line() == b""
+        finally:
+            sys.stdin = old_stdin
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+    asyncio.run(asyncio.wait_for(exercise_pipe(), timeout=1.0))
+
+
+def assert_patched_tunnel_source(source_path):
+    """Execute isolated upstream functions against fakes, never import services."""
+    tree = ast.parse(source_path.read_text())
+    provider = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                    and node.name == "_create_no_root_tunnel_provider")
+    tunnel_class = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                        and node.name == "UserspaceRsdTunnel")
+    wait_method = next(node for node in tunnel_class.body if isinstance(node, ast.AsyncFunctionDef)
+                       and node.name == "wait_closed")
+    class NotPairedError(Exception):
+        pass
+    class InvalidServiceError(Exception):
+        pass
+    class TunnelUnavailableError(Exception):
+        pass
+    trace = []
+    provider_failure = [False]
+    lockdown = SimpleNamespace(
+        paired=True,
+        service=SimpleNamespace(mux_device=SimpleNamespace(connection_type="Network")),
+    )
+    async def close():
+        trace.append("close")
+    lockdown.close = close
+    async def create_using_usbmux(**kwargs):
+        assert kwargs == {
+            "serial": TEST_UDID, "autopair": False, "connection_type": "Network",
+            "auto_reconnect": False,
+        }
+        trace.append("network")
+        return lockdown
+    async def create_provider(value):
+        assert value is lockdown and value.paired is True
+        trace.append("service")
+        if provider_failure[0]:
+            raise InvalidServiceError()
+        return "provider"
+    namespace = {
+        "Optional": Optional, "asyncio": asyncio,
+        "create_using_usbmux": create_using_usbmux,
+        "tunnel_service": SimpleNamespace(CoreDeviceTunnelProxy=SimpleNamespace(create=create_provider)),
+        "NotPairedError": NotPairedError, "InvalidServiceError": InvalidServiceError,
+        "UserspaceTunnelUnavailableError": TunnelUnavailableError,
+        "PyMobileDevice3Exception": RuntimeError,
+    }
+    selected = ast.Module(body=[provider, wait_method], type_ignores=[])
+    exec(compile(selected, str(source_path), "exec"), namespace)
+    async def exercise():
+        result = await namespace[provider.name](TEST_UDID, False, False, "Network", False)
+        assert result == ("provider", lockdown) and trace == ["network", "service"]
+        trace.clear()
+        lockdown.paired = False
+        try:
+            await namespace[provider.name](TEST_UDID, False, False, "Network", False)
+            raise AssertionError("unpaired target was accepted")
+        except NotPairedError:
+            pass
+        assert trace == ["network", "close"]
+        trace.clear()
+        lockdown.paired = True
+        lockdown.service.mux_device.connection_type = "USB"
+        try:
+            await namespace[provider.name](TEST_UDID, False, False, "Network", False)
+            raise AssertionError("wrong transport was accepted")
+        except TunnelUnavailableError:
+            pass
+        assert trace == ["network", "close"]
+        trace.clear()
+        lockdown.service.mux_device.connection_type = "Network"
+        provider_failure[0] = True
+        try:
+            await namespace[provider.name](TEST_UDID, False, False, "Network", False)
+            raise AssertionError("unavailable network provider was accepted")
+        except TunnelUnavailableError:
+            pass
+        assert trace == ["network", "service", "close"]
+        event = asyncio.Event()
+        transport = asyncio.create_task(event.wait())
+        observer = asyncio.create_task(namespace[wait_method.name](SimpleNamespace(_closed_task=transport)))
+        await asyncio.sleep(0)
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+        assert not transport.done(), "canceling an observer canceled the transport"
+        event.set()
+        await namespace[wait_method.name](SimpleNamespace(_closed_task=transport))
+    asyncio.run(asyncio.wait_for(exercise(), timeout=1.0))
+
+    lockdown_source = source_path.parents[1] / "lockdown.py"
+    lockdown_tree = ast.parse(lockdown_source.read_text())
+    lockdown_class = next(node for node in lockdown_tree.body if isinstance(node, ast.ClassDef)
+                          and node.name == "LockdownClient")
+    request_method = next(node for node in lockdown_class.body if isinstance(node, ast.AsyncFunctionDef)
+                          and node.name == "_request")
+    reconnect_method = next(node for node in lockdown_class.body if isinstance(node, ast.AsyncFunctionDef)
+                            and node.name == "areestablish_connection")
+    class ConnectionTerminatedError(Exception):
+        pass
+    class InvalidConnectionError(Exception):
+        pass
+    class LockdownError(Exception):
+        pass
+    request_namespace = {
+        "asyncio": asyncio, "Any": object, "Optional": Optional,
+        "ConnectionTerminatedError": ConnectionTerminatedError,
+        "InvalidConnectionError": InvalidConnectionError, "LockdownError": LockdownError,
+    }
+    # Retain postponed annotations so the source's full type imports are not
+    # needed to execute these isolated, network-free functions.
+    future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
+    selected = ast.fix_missing_locations(ast.Module(
+        body=[future, request_method, reconnect_method], type_ignores=[],
+    ))
+    exec(compile(selected, str(lockdown_source), "exec"), request_namespace)
+    async def exercise_no_retry():
+        for failure, response_error in (
+            (ConnectionResetError("private reset"), None),
+            (ConnectionTerminatedError("private lost transport"), None),
+            (RuntimeError("different event loop"), None),
+            (None, InvalidConnectionError("private connection")),
+            (None, LockdownError("SessionInactive")),
+        ):
+            calls = []
+            async def send_recv_plist(message):
+                calls.append("send")
+                if failure is not None:
+                    raise failure
+                return {}
+            def verify(request, response, **kwargs):
+                if response_error is not None:
+                    raise response_error
+                return response
+            async def reconnect():
+                calls.append("FORBIDDEN-reconnect")
+                raise AssertionError("request replay attempted")
+            target = SimpleNamespace(
+                auto_reconnect=False, label="test", service=SimpleNamespace(send_recv_plist=send_recv_plist),
+                _verify_request_response=verify, areestablish_connection=reconnect,
+            )
+            try:
+                await request_namespace[request_method.name](target, "SetValue", {"Value": True})
+                raise AssertionError("injected transport/session failure was hidden")
+            except (ConnectionResetError, ConnectionTerminatedError, RuntimeError, InvalidConnectionError, LockdownError):
+                pass
+            assert calls == ["send"], calls
+        calls = []
+        async def forbidden_close():
+            calls.append("FORBIDDEN-close-and-reconnect")
+        target = SimpleNamespace(auto_reconnect=False, close=forbidden_close)
+        try:
+            await request_namespace[reconnect_method.name](target)
+            raise AssertionError("explicit reconnect was accepted")
+        except (RuntimeError, ConnectionTerminatedError):
+            pass
+        assert calls == []
+    asyncio.run(asyncio.wait_for(exercise_no_retry(), timeout=1.0))
+
+    factory = next(node for node in lockdown_tree.body if isinstance(node, ast.AsyncFunctionDef)
+                   and node.name == "create_using_usbmux")
+    factory_calls = []
+    service = SimpleNamespace(mux_device=SimpleNamespace(serial=TEST_UDID))
+    async def service_close():
+        factory_calls.append("service-close")
+    service.close = service_close
+    async def open_service(*args, **kwargs):
+        assert kwargs["connection_type"] == "Network"
+        return service
+    class FakeMux:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+    async def create_mux(**kwargs):
+        return FakeMux()
+    class FakeLockdown:
+        def __init__(self, supplied_service, **kwargs):
+            assert supplied_service is service
+        async def _initialize(self):
+            assert self.auto_reconnect is False
+            factory_calls.append("initialize-without-retry")
+        async def _handle_autopair(self, autopair, timeout):
+            assert autopair is False and self.auto_reconnect is False
+            factory_calls.append("validate-without-retry")
+    factory_namespace = {
+        "DEFAULT_LABEL": "test", "SERVICE_PORT": 62078, "SYSTEM_BUID": "test-buid",
+        "ServiceConnection": SimpleNamespace(create_using_usbmux=open_service),
+        "usbmux": SimpleNamespace(create_mux=create_mux),
+        "UsbmuxLockdownClient": FakeLockdown, "PlistMuxConnection": type("PlistMux", (), {}),
+        "PlistUsbmuxLockdownClient": FakeLockdown,
+        "generate_host_id": lambda _hostname: "test-host",
+        "create_pairing_records_cache_folder": lambda path: path,
+    }
+    selected = ast.fix_missing_locations(ast.Module(body=[future, factory], type_ignores=[]))
+    exec(compile(selected, str(lockdown_source), "exec"), factory_namespace)
+    asyncio.run(factory_namespace[factory.name](
+        serial=TEST_UDID, autopair=False, connection_type="Network", auto_reconnect=False,
+    ))
+    assert factory_calls == ["initialize-without-retry", "validate-without-retry"]
+
+
 def main():
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: test-yios-location-backend.py BRIDGE")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("usage: test-yios-location-backend.py BRIDGE [PATCHED_TUNNEL_SOURCE]")
     bridge_path = pathlib.Path(sys.argv[1])
     if not bridge_path.is_file():
         raise SystemExit("bridge is missing")
@@ -685,8 +1116,11 @@ def main():
     )
 
     assert_generic_iphone_targets(module, trace)
+    assert_wifi_contract(module, trace)
+    if len(sys.argv) == 3:
+        assert_patched_tunnel_source(pathlib.Path(sys.argv[2]))
 
-    print("LOCATION BACKEND OFFLINE GENERIC-IPHONE + SET-PERSISTENT + DEVELOPER-MODE-OPTION TEST PASS")
+    print("LOCATION BACKEND OFFLINE GENERIC-IPHONE + PERSISTENT + DEVELOPER-MODE + WIFI TEST PASS")
 
 
 if __name__ == "__main__":

@@ -163,6 +163,35 @@ struct UIContractTestMain {
         }
         mockLocationRender.window.close()
 
+        mockLocationModel.mockLocationController.selectTransport(.wifi)
+        let wifiRender = render(
+            model: mockLocationModel,
+            colorScheme: .dark,
+            initialDestination: .mockLocation,
+            disableAnimations: true
+        )
+        expect(wifiRender.bitmapWasCreated, .normal, "Wi-Fi Mock Location setup did not render")
+        if usedNativeAccessibility {
+            let nodes = accessibilityTree(from: wifiRender.hostingView)
+            expect(node("mockLocationTransportPicker", in: nodes) != nil, .normal, "Wi-Fi transport picker is missing")
+            expect(node("mockLocationPersistentModeToggle", in: nodes) == nil, .normal, "Wi-Fi must not expose experimental one-shot persistence")
+            assertButton(
+                "mockLocationEnableWiFiButton",
+                expectedLabel: "Enable Wi-Fi Connection",
+                expectedEnabled: mockLocationModel.mockLocationController.canEnableWiFi,
+                nodes: nodes,
+                scenario: .normal
+            )
+            assertButton(
+                "mockLocationSetButton",
+                expectedLabel: "Start Wi-Fi Mock Location",
+                expectedEnabled: false,
+                nodes: nodes,
+                scenario: .normal
+            )
+        }
+        wifiRender.window.close()
+
         for persistent in [false, true] {
             let lockedModel = lockedMockLocationModel(persistent: persistent)
             assertMockLocationInterlock(lockedModel, persistent: persistent)

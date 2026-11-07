@@ -37,6 +37,8 @@ location_source_pairs=(
   "${project_dir}/Backend/MockLocation/test_yios_location_backend.py|${location_backend}/Resources/YIOSLocation/ThirdPartyNotices/test-yios-location-backend.py"
   "${project_dir}/Backend/MockLocation/requirements-python39.lock|${location_backend}/Resources/YIOSLocation/requirements-python39.lock"
   "${project_dir}/Backend/MockLocation/dependency-artifacts.sha256|${location_backend}/Resources/YIOSLocation/dependency-artifacts.sha256"
+  "${project_dir}/Backend/MockLocation/pymobiledevice3-wifi.patch|${location_backend}/Resources/YIOSLocation/Source/pymobiledevice3-wifi.patch"
+  "${project_dir}/Backend/MockLocation/PYMOBILEDEVICE3-PATCH.md|${location_backend}/Resources/YIOSLocation/ThirdPartyNotices/PYMOBILEDEVICE3-PATCH.md"
   "${project_dir}/Scripts/build-location-backend.sh|${location_backend}/Resources/YIOSLocation/ThirdPartyNotices/build-location-backend.sh"
   "${project_dir}/Scripts/verify-location-backend.sh|${location_backend}/Resources/YIOSLocation/ThirdPartyNotices/verify-location-backend.sh"
 )

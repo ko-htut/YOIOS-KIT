@@ -29,6 +29,7 @@ private enum VisualScenario: String, CaseIterable {
     case crashReview = "crash-review"
     case settings
     case mockLocationIdle = "mock-location-idle"
+    case mockLocationWiFi = "mock-location-wifi"
     case mockLocationReview = "mock-location-review"
     case mockLocationPersistent = "mock-location-persistent"
 }
@@ -77,6 +78,9 @@ struct VisualTestMain {
             dependencyDoctorSnapshot: DashboardTestSupport.dependencyDoctorSnapshot
         )
         configure(model, for: scenario)
+        if scenario == .mockLocationWiFi {
+            model.mockLocationController.selectTransport(.wifi)
+        }
 
         let initialDestination = destination(for: scenario)
 
@@ -153,7 +157,7 @@ struct VisualTestMain {
         case .guides, .guidesMonitoring: return .guides
         case .logs, .operationFailed: return .logs
         case .settings: return .settings
-        case .mockLocationIdle, .mockLocationReview, .mockLocationPersistent: return .mockLocation
+        case .mockLocationIdle, .mockLocationWiFi, .mockLocationReview, .mockLocationPersistent: return .mockLocation
         default: return nil
         }
     }
@@ -204,7 +208,7 @@ struct VisualTestMain {
             model.statusText = "Watching the connected iPhone for Recovery or DFU"
             model.detailText = "Follow the physical button sequence. You can stop the USB watcher from any page."
 
-        case .mockLocationIdle:
+        case .mockLocationIdle, .mockLocationWiFi:
             model.snapshot = genericMockLocationTargetFixture()
             model.deviceCenterSnapshot = DeviceCenterCollector.baseline(for: model.snapshot)
             model.statusText = "Normal iOS mode verified"

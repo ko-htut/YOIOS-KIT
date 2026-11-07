@@ -17,13 +17,15 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.15</string>
+	<string>1.16</string>
 	<key>CFBundleVersion</key>
-	<string>16</string>
+	<string>17</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>YIOS-KIT connects to your trusted iPhone on the local network for an explicitly started Wi-Fi Mock Location session.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

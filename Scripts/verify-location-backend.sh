@@ -49,6 +49,8 @@ fi
 [[ -f "${resources_dir}/LocationBackendManifest.json" ]] || fail "manifest is missing"
 [[ -f "$checksum_file" ]] || fail "payload checksum list is missing"
 [[ -f "${resources_dir}/Source/pymobiledevice3-10.9.0.tar.gz" ]] || fail "corresponding source is missing"
+[[ -f "${resources_dir}/Source/pymobiledevice3-wifi.patch" ]] || fail "corresponding tunnel patch is missing"
+[[ -f "${resources_dir}/ThirdPartyNotices/PYMOBILEDEVICE3-PATCH.md" ]] || fail "tunnel modification notice is missing"
 [[ -f "${resources_dir}/ThirdPartyNotices/pymobiledevice3-GPL-3.0-or-later.txt" ]] || fail "GPL notice is missing"
 [[ -f "${resources_dir}/ThirdPartyNotices/test-yios-location-backend.py" ]] || fail "offline protocol test is missing"
 
@@ -93,6 +95,14 @@ PY
 
 source_checksum="$(/usr/bin/shasum -a 256 "${resources_dir}/Source/pymobiledevice3-10.9.0.tar.gz" | /usr/bin/awk '{print $1}')"
 [[ "$source_checksum" == "20785dcd92b4d09277ede37573f0be765a8fa77df021208ee0787138b38526b4" ]] || fail "source checksum mismatch"
+patch_checksum="$(/usr/bin/shasum -a 256 "${resources_dir}/Source/pymobiledevice3-wifi.patch" | /usr/bin/awk '{print $1}')"
+[[ "$patch_checksum" == "2a6e1d35ef66ff18352e2a59cc1616e5fb4e896f4fe0538345d9ebf63858febf" ]] || fail "tunnel patch checksum mismatch"
+tunnel_checksum="$(/usr/bin/shasum -a 256 "${packages_dir}/pymobiledevice3/remote/userspace_tunnel.py" | /usr/bin/awk '{print $1}')"
+[[ "$tunnel_checksum" == "26864a4455325bf8660d2713fe4579deb1bac9b1224ac8789cb5fc9a870afe62" ]] || fail "patched tunnel checksum mismatch"
+lockdown_checksum="$(/usr/bin/shasum -a 256 "${packages_dir}/pymobiledevice3/lockdown.py" | /usr/bin/awk '{print $1}')"
+[[ "$lockdown_checksum" == "6aec9ece02b95f353626c1089f49fcaabffddfa2aa54d12d98ec7ca6973ceb9c" ]] || fail "patched lockdown checksum mismatch"
+rsd_checksum="$(/usr/bin/shasum -a 256 "${packages_dir}/pymobiledevice3/remote/remote_service_discovery.py" | /usr/bin/awk '{print $1}')"
+[[ "$rsd_checksum" == "8114a251f4a80878d7855de1508c64b0ef812a57ce9343ca24498ce96fa4b434" ]] || fail "patched RSD checksum mismatch"
 
 # Verify the narrow source contract. The only permitted Developer Mode mutation
 # is the pinned upstream reveal-only Settings marker. These checks fail closed
@@ -109,6 +119,9 @@ source_checksum="$(/usr/bin/shasum -a 256 "${resources_dir}/Source/pymobiledevic
 /usr/bin/grep -Fq 'expectedECID' "$bridge" || fail "Developer Mode reveal ECID attestation is missing"
 /usr/bin/grep -Fq 'reveal_developer_mode_option_in_ui' "$bridge" || fail "reveal-only Developer Mode method is missing"
 /usr/bin/grep -Fq 'developerModeOptionRequested' "$bridge" || fail "Developer Mode option protocol event is missing"
+/usr/bin/grep -Fq 'set_enable_wifi_connections(True)' "$bridge" || fail "Wi-Fi preparation method is missing"
+/usr/bin/grep -Fq 'connection_type="Network" if transport == "wifi" else "USB"' "$bridge" || fail "explicit transport selection is missing"
+/usr/bin/grep -Fq 'code="connection_lost", phase="transport"' "$bridge" || fail "transport loss reporting is missing"
 /usr/bin/grep -Fq 'command == "set-persistent"' "$bridge" || fail "one-shot persistent experiment is missing"
 /usr/bin/grep -Fq 'phase="persistentTeardown"' "$bridge" || fail "persistent teardown failure contract is missing"
 if /usr/bin/grep -E 'enable_developer_mode|enable_developer_mode_post_restart|DEVELOPER_MODE_ENABLE|DEVELOPER_MODE_ACCEPT|retry_create_using_usbmux|mount_developer|mounter|autopair=True|start_tunnel_over_remotepairing|send_recv_plist' "$bridge" >/dev/null; then
@@ -140,6 +153,7 @@ PY
 # fully in-memory fakes. This proves the event order, exact target/USB options,
 # and absence of clear/enable/reboot/pair/retry without opening a device service.
 /usr/bin/python3 "${resources_dir}/ThirdPartyNotices/test-yios-location-backend.py" "$bridge" \
+  "${packages_dir}/pymobiledevice3/remote/userspace_tunnel.py" \
   || fail "offline backend protocol test failed"
 
 native_count=0
@@ -193,7 +207,7 @@ line_count="$(print -r -- "$version_output" | /usr/bin/wc -l | /usr/bin/tr -d ' 
 import json, sys
 value = json.loads(sys.argv[1])
 assert value == {
-    "backend_version": "1.2.0",
+    "backend_version": "1.3.0",
     "event": "hello",
     "protocol": 1,
     "protocol_version": 1,

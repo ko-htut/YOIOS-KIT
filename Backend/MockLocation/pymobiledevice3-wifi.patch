@@ -1,0 +1,232 @@
+--- a/pymobiledevice3/remote/userspace_tunnel.py
++++ b/pymobiledevice3/remote/userspace_tunnel.py
+@@ -49,7 +49,7 @@
+ from pmd_pytcp.socket import socket as pytcp_socket
+ 
+ import pymobiledevice3.remote.tunnel_service as tunnel_service
+-from pymobiledevice3.exceptions import InvalidServiceError, PyMobileDevice3Exception, UserspaceTunnelUnavailableError
++from pymobiledevice3.exceptions import InvalidServiceError, NotPairedError, PyMobileDevice3Exception, UserspaceTunnelUnavailableError
+ from pymobiledevice3.lockdown import create_using_usbmux
+ from pymobiledevice3.osu.os_utils import get_os_utils
+ from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+@@ -560,7 +560,10 @@
+             self._sock.close()
+ 
+ 
+-async def _create_no_root_tunnel_provider(serial: Optional[str], autopair: bool, remotepairing_fallback: bool = True):
++async def _create_no_root_tunnel_provider(
++    serial: Optional[str], autopair: bool, remotepairing_fallback: bool = True,
++    connection_type: Optional[str] = None, auto_reconnect: bool = True,
++):
+     """Pick a tunnel provider that needs no root, mirroring ``remote start-tunnel``'s family:
+ 
+     * iOS 17.4+ over USB: :class:`~pymobiledevice3.remote.tunnel_service.CoreDeviceTunnelProxy`
+@@ -579,8 +582,16 @@
+     devices elsewhere, e.g. a kernel tunnel). Either way, a device that cannot be served no-root
+     raises :class:`UserspaceTunnelUnavailableError`.
+     """
+-    lockdown = await create_using_usbmux(serial=serial, autopair=autopair)
++    lockdown = await create_using_usbmux(
++        serial=serial, autopair=autopair, connection_type=connection_type, auto_reconnect=auto_reconnect,
++    )
+     try:
++        if lockdown.paired is not True:
++            raise NotPairedError()
++        if connection_type is not None:
++            mux_device = getattr(getattr(lockdown, "service", None), "mux_device", None)
++            if getattr(mux_device, "connection_type", None) != connection_type:
++                raise UserspaceTunnelUnavailableError("requested connection type unavailable")
+         return await tunnel_service.CoreDeviceTunnelProxy.create(lockdown), lockdown
+     except InvalidServiceError:
+         # iOS < 17.4 has no CoreDeviceProxy lockdown service.
+@@ -650,9 +661,15 @@
+     """
+ 
+     def __init__(
+-        self, serial: Optional[str] = None, autopair: bool = True, remotepairing_fallback: bool = True
++        self, serial: Optional[str] = None, autopair: bool = True, remotepairing_fallback: bool = True,
++        connection_type: Optional[str] = None, auto_reconnect: bool = True,
+     ) -> None:
+         self.serial = serial
++        if connection_type not in (None, "USB", "Network"):
++            raise ValueError("unsupported connection type")
++        self.connection_type = connection_type
++        self.auto_reconnect = auto_reconnect
++        self._closed_task: Optional[asyncio.Task] = None
+         self.autopair = autopair
+         self.remotepairing_fallback = remotepairing_fallback
+         self.rsd: Optional[RemoteServiceDiscoveryService] = None
+@@ -680,7 +697,7 @@
+         stack = AsyncExitStack()
+         try:
+             provider, lockdown = await _create_no_root_tunnel_provider(
+-                self.serial, self.autopair, self.remotepairing_fallback
++                self.serial, self.autopair, self.remotepairing_fallback, self.connection_type, self.auto_reconnect
+             )
+             stack.push_async_callback(provider.close)
+             if lockdown is not None:
+@@ -694,7 +711,8 @@
+             # Inject the relay dialer into THIS rsd only (no global asyncio.open_connection patch),
+             # so a library consumer's other connections in the same process stay on the stdlib default.
+             rsd = RemoteServiceDiscoveryService(
+-                (tunnel_result.address, tunnel_result.port), open_connection=dial_plane.dial
++                (tunnel_result.address, tunnel_result.port), open_connection=dial_plane.dial,
++                auto_reconnect=self.auto_reconnect,
+             )
+             stack.push_async_callback(rsd.close)
+             await rsd.connect()
+@@ -705,11 +723,18 @@
+             raise
+ 
+         self._exit_stack = stack
++        self._closed_task = asyncio.create_task(tunnel_result.client.wait_closed())
+         self.rsd = rsd
+         _active_tunnel = self
+         USERSPACE_ACTIVE = True
+         logger.debug("userspace RSD established (no root): %s rsd_port=%s", tunnel_result.address, tunnel_result.port)
+         return rsd
++
++    async def wait_closed(self) -> None:
++        """Observe loss without allowing a canceled observer to stop the transport."""
++        if self._closed_task is None:
++            raise PyMobileDevice3Exception("userspace tunnel is not open")
++        await asyncio.shield(self._closed_task)
+ 
+     async def aclose(self) -> None:
+         """Tear down the tunnel and its RSD, releasing every resource in LIFO order and restoring
+@@ -727,7 +752,14 @@
+             _active_tunnel = None
+             USERSPACE_ACTIVE = False
+             tunnel_service.USE_USERSPACE_TUNNEL = False
+-        await stack.aclose()
++        try:
++            await stack.aclose()
++        finally:
++            closed_task, self._closed_task = self._closed_task, None
++            if closed_task is not None:
++                if not closed_task.done():
++                    closed_task.cancel()
++                await asyncio.gather(closed_task, return_exceptions=True)
+ 
+     #: ``open``/``close`` are aliases for :meth:`aopen`/:meth:`aclose` (still awaitable).
+     open = aopen
+--- a/pymobiledevice3/lockdown.py
++++ b/pymobiledevice3/lockdown.py
+@@ -141,6 +141,7 @@
+         self.system_buid: str = system_buid
+         self.pair_record: Optional[dict[str, Any]] = pair_record
+         self.paired = False
++        self.auto_reconnect = True
+         self.session_id = None
+         self.pairing_records_cache_folder = pairing_records_cache_folder
+         self.port = port
+@@ -165,6 +166,7 @@
+         pairing_records_cache_folder: Optional[Path] = None,
+         port: int = SERVICE_PORT,
+         private_key: Optional[RSAPrivateKey] = None,
++        auto_reconnect: bool = True,
+         **cls_specific_args: Any,
+     ):
+         """Build a client around an existing service connection, initialize it and optionally pair.
+@@ -204,6 +206,7 @@
+             port=port,
+             **cls_specific_args,
+         )
++        lockdown_client.auto_reconnect = auto_reconnect
+         await lockdown_client._initialize()
+         await lockdown_client._handle_autopair(autopair, pair_timeout, private_key=private_key)
+         return lockdown_client
+@@ -1009,12 +1012,16 @@
+                 # ServiceConnection streams are loop-bound; reconnect if this client was created in another loop.
+                 if isinstance(e, RuntimeError) and "different event loop" not in str(e):
+                     raise
++                if not self.auto_reconnect:
++                    raise
+                 await self.areestablish_connection()
+                 response = await self.service.send_recv_plist(message)
+             try:
+                 return self._verify_request_response(request, response, verify_request=verify_request)
+             except (InvalidConnectionError, LockdownError) as e:
+                 if not (isinstance(e, InvalidConnectionError) or str(e) == "SessionInactive"):
++                    raise
++                if not self.auto_reconnect:
+                     raise
+                 await self.areestablish_connection()
+                 response = await self.service.send_recv_plist(message)
+@@ -1132,6 +1139,8 @@
+         re-validates pairing if a pair record is present. Called internally to recover from connection
+         errors mid-request.
+         """
++        if not self.auto_reconnect:
++            raise ConnectionTerminatedError("automatic reconnection disabled")
+         await self.close()
+         self.session_id = None
+         self.service = await self.create_service_connection(self.port)
+@@ -1373,6 +1382,7 @@
+     pairing_records_cache_folder: Optional[Path] = None,
+     port: int = SERVICE_PORT,
+     usbmux_address: Optional[str] = None,
++    auto_reconnect: bool = True,
+ ) -> UsbmuxLockdownClient:
+     """Connect to a device over usbmuxd and return a ready-to-use lockdown client.
+ 
+@@ -1424,6 +1434,7 @@
+             port=port,
+             usbmux_address=usbmux_address,
+         )
++        lockdown_client.auto_reconnect = auto_reconnect
+         await lockdown_client._initialize()
+         await lockdown_client._handle_autopair(autopair, pair_timeout)
+     except Exception:
+@@ -1534,6 +1545,7 @@
+     pair_record: Optional[dict[str, Any]] = None,
+     pairing_records_cache_folder: Optional[Path] = None,
+     port: int = SERVICE_PORT,
++    auto_reconnect: bool = True,
+ ) -> RemoteLockdownClient:
+     """Wrap an existing RemoteXPC (RSD) service connection in a lockdown client.
+ 
+@@ -1564,6 +1576,7 @@
+             pair_timeout=pair_timeout,
+             autopair=autopair,
+             port=port,
++            auto_reconnect=auto_reconnect,
+         )
+     except Exception:
+         await service.close()
+--- a/pymobiledevice3/remote/remote_service_discovery.py
++++ b/pymobiledevice3/remote/remote_service_discovery.py
+@@ -58,7 +58,8 @@
+     """
+ 
+     def __init__(
+-        self, address: tuple[str, int], name: Optional[str] = None, open_connection: Optional[Callable[..., Any]] = None
++        self, address: tuple[str, int], name: Optional[str] = None, open_connection: Optional[Callable[..., Any]] = None,
++        auto_reconnect: bool = True,
+     ) -> None:
+         """
+         :param address: ``(host, port)`` of the RSD endpoint to connect to.
+@@ -70,6 +71,7 @@
+         """
+         super().__init__()
+         self.name = name
++        self.auto_reconnect = auto_reconnect
+         # ``asyncio.open_connection``-compatible dialer used for the RemoteXPC handshake and every
+         # service connection opened through this RSD (read by callers such as FileServiceService).
+         # ``None`` => stdlib ``asyncio.open_connection``; the userspace tunnel injects a relay dialer
+@@ -245,6 +247,7 @@
+                 self.lockdown = await create_using_remote(
+                     await self.start_lockdown_service("com.apple.mobile.lockdown.remote.trusted"),
+                     identifier=self.udid,
++                    auto_reconnect=self.auto_reconnect,
+                 )
+ 
+             if self.lockdown is None:
+@@ -253,6 +256,7 @@
+                     self.lockdown = await create_using_remote(
+                         await self.start_lockdown_service("com.apple.mobile.lockdown.remote.untrusted"),
+                         identifier=self.udid,
++                        auto_reconnect=self.auto_reconnect,
+                     )
+ 
+             self.all_values = self.lockdown.all_values if self.lockdown is not None else {}

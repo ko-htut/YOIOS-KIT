@@ -2,8 +2,8 @@
 """Restricted JSON-lines bridge for YIOS-KIT's iOS location simulator.
 
 The bridge deliberately exposes only version, readiness probe, static set,
-opt-in experimental one-shot set, clear, and an exact-target request that makes
-the Developer Mode option expected in Settings.  It never mounts a Developer
+opt-in experimental one-shot set, clear, USB Wi-Fi preparation, and an exact-target
+request that makes the Developer Mode option expected in Settings. It never mounts a Developer
 Disk Image, enables Developer Mode, reboots, pairs a phone, starts a privileged
 tunnel, retries a request, or falls back to RemotePairing.
 """
@@ -22,12 +22,13 @@ from typing import Any, Dict, Optional, Tuple
 
 
 PROTOCOL_VERSION = 1
-BACKEND_VERSION = "1.2.0"
+BACKEND_VERSION = "1.3.0"
 PINNED_PYMOBILEDEVICE3_VERSION = "10.9.0"
 MINIMUM_IOS = (17, 4)
 MAX_REQUEST_BYTES = 4096
 CONNECT_TIMEOUT_SECONDS = 45.0
 SERVICE_TIMEOUT_SECONDS = 30.0
+CLOSE_TIMEOUT_SECONDS = 5.0
 UDID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 ECID_PATTERN = re.compile(r"^0x[0-9A-F]{1,16}$")
 IPHONE_PRODUCT_TYPE_PATTERN = re.compile(r"^iPhone[1-9][0-9]*,(?:0|[1-9][0-9]*)$")
@@ -276,19 +277,115 @@ def map_reveal_exception(imports: BackendImports, error: BaseException) -> str:
     return "internal_failure"
 
 
+_stdin_pending = bytearray()
+
+
 async def read_stdin_line() -> bytes:
-    return await asyncio.to_thread(sys.stdin.buffer.readline, MAX_REQUEST_BYTES + 1)
+    """Read a cancellable control line without leaving a worker blocked on stdin."""
+    loop = asyncio.get_running_loop()
+    result = loop.create_future()
+    descriptor = sys.stdin.fileno()
+
+    def consume() -> None:
+        if result.done():
+            return
+        newline = _stdin_pending.find(b"\n")
+        if newline >= 0:
+            length = min(newline + 1, MAX_REQUEST_BYTES + 1)
+            line = bytes(_stdin_pending[:length])
+            del _stdin_pending[:length]
+            result.set_result(line)
+        elif len(_stdin_pending) > MAX_REQUEST_BYTES:
+            result.set_result(bytes(_stdin_pending))
+            _stdin_pending.clear()
+
+    def readable() -> None:
+        if result.done():
+            return
+        try:
+            chunk = os.read(descriptor, MAX_REQUEST_BYTES + 1)
+            if not chunk:
+                result.set_result(bytes(_stdin_pending))
+                _stdin_pending.clear()
+                return
+            _stdin_pending.extend(chunk)
+            consume()
+        except BaseException as error:
+            if not result.done():
+                result.set_exception(error)
+
+    consume()
+    if not result.done():
+        loop.add_reader(descriptor, readable)
+    try:
+        return await result
+    finally:
+        loop.remove_reader(descriptor)
+
+
+def attest_identity(target: Any, udid: str, product_type: str, ecid: Optional[int]) -> None:
+    reported_udid = getattr(target, "udid", None) or getattr(target, "identifier", None)
+    if normalized_udid(reported_udid) != normalized_udid(udid):
+        raise TargetMismatchError()
+    if getattr(target, "product_type", None) != product_type:
+        raise TargetMismatchError()
+    if ecid is not None:
+        try:
+            reported_ecid = getattr(target, "ecid")
+            if type(reported_ecid) is not int or reported_ecid != ecid:
+                raise TargetMismatchError()
+        except (AttributeError, TypeError, ValueError, KeyError):
+            raise TargetMismatchError() from None
+
+
+async def open_attested_lockdown(
+    imports: BackendImports,
+    udid: str,
+    expected_product_type: str,
+    expected_ecid: int,
+    connection_type: str,
+) -> Any:
+    lockdown = await asyncio.wait_for(
+        imports.create_using_usbmux(
+            serial=udid, connection_type=connection_type, autopair=False, auto_reconnect=False,
+        ),
+        timeout=CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        mux_device = getattr(getattr(lockdown, "service", None), "mux_device", None)
+        if getattr(mux_device, "connection_type", None) != connection_type:
+            raise TargetMismatchError()
+        attest_identity(lockdown, udid, expected_product_type, expected_ecid)
+        if getattr(lockdown, "paired", False) is not True:
+            raise PairingRequiredError()
+        os_version = parse_os_version(getattr(lockdown, "product_version", None))
+        if os_version is None or os_version < MINIMUM_IOS:
+            raise UnsupportedOSError()
+        return lockdown
+    except BaseException:
+        await close_bounded(lockdown.close())
+        raise
 
 
 async def open_attested_target(
     imports: BackendImports,
     udid: str,
     expected_product_type: str,
+    transport: str = "usb",
+    expected_ecid: Optional[int] = None,
 ) -> Tuple[Any, Any]:
+    if transport == "wifi":
+        assert expected_ecid is not None
+        lockdown = await open_attested_lockdown(
+            imports, udid, expected_product_type, expected_ecid, "Network",
+        )
+        await asyncio.wait_for(lockdown.close(), timeout=CLOSE_TIMEOUT_SECONDS)
     tunnel = imports.UserspaceRsdTunnel(
         serial=udid,
         autopair=False,
         remotepairing_fallback=False,
+        connection_type="Network" if transport == "wifi" else "USB",
+        auto_reconnect=False,
     )
     try:
         rsd = await asyncio.wait_for(tunnel.aopen(), timeout=CONNECT_TIMEOUT_SECONDS)
@@ -297,6 +394,7 @@ async def open_attested_target(
             raise TargetMismatchError()
         if getattr(rsd, "product_type", None) != expected_product_type:
             raise TargetMismatchError()
+        attest_identity(rsd, udid, expected_product_type, expected_ecid)
 
         os_version = parse_os_version(getattr(rsd, "product_version", None))
         if os_version is None or os_version < MINIMUM_IOS:
@@ -312,7 +410,7 @@ async def open_attested_target(
         emit("attested", "ok", product_type=expected_product_type)
         return tunnel, rsd
     except BaseException:
-        await tunnel.aclose()
+        await close_bounded(tunnel.aclose())
         raise
 
 
@@ -332,6 +430,14 @@ class PairingRequiredError(Exception):
     pass
 
 
+async def close_bounded(operation: Any) -> bool:
+    try:
+        await asyncio.wait_for(operation, timeout=CLOSE_TIMEOUT_SECONDS)
+        return True
+    except BaseException:
+        return False
+
+
 async def reveal_developer_mode(
     imports: BackendImports,
     udid: str,
@@ -347,6 +453,7 @@ async def reveal_developer_mode(
                 serial=udid,
                 connection_type="USB",
                 autopair=False,
+                auto_reconnect=False,
             ),
             timeout=CONNECT_TIMEOUT_SECONDS,
         )
@@ -401,7 +508,7 @@ async def reveal_developer_mode(
     finally:
         if lockdown is not None:
             try:
-                await lockdown.close()
+                await asyncio.wait_for(lockdown.close(), timeout=CLOSE_TIMEOUT_SECONDS)
             except BaseException:
                 pass
 
@@ -413,9 +520,75 @@ async def with_location_service(imports: BackendImports, rsd: Any) -> Tuple[Any,
         location = imports.LocationSimulation(dvt)
         await asyncio.wait_for(location.connect(), timeout=SERVICE_TIMEOUT_SECONDS)
     except BaseException:
-        await dvt.close()
+        await close_bounded(dvt.close())
         raise
     return dvt, location
+
+
+async def enable_wifi(
+    imports: BackendImports, udid: str, expected_product_type: str, expected_ecid: int,
+) -> int:
+    lockdown = None
+    phase = "usb"
+    emit_hello()
+    try:
+        lockdown = await open_attested_lockdown(
+            imports, udid, expected_product_type, expected_ecid, "USB",
+        )
+        emit("attested", "ok", product_type=expected_product_type)
+        phase = "wifiSetup"
+        enabled = await asyncio.wait_for(
+            lockdown.get_enable_wifi_connections(), timeout=SERVICE_TIMEOUT_SECONDS,
+        )
+        emit("requestDispatched", "working")
+        if enabled is not True:
+            await asyncio.wait_for(
+                lockdown.set_enable_wifi_connections(True), timeout=SERVICE_TIMEOUT_SECONDS,
+            )
+            enabled = await asyncio.wait_for(
+                lockdown.get_enable_wifi_connections(), timeout=SERVICE_TIMEOUT_SECONDS,
+            )
+            if enabled is not True:
+                return fail("developer_service_unavailable", phase, 4)
+        emit("wifiEnabled", "ok")
+        return 0
+    except TargetMismatchError:
+        return fail("target_mismatch", "attestation")
+    except PairingRequiredError:
+        return fail("pairing_required", "pairing")
+    except UnsupportedOSError:
+        return fail("developer_service_unavailable", "attestation")
+    except BaseException as error:
+        return fail(map_exception(imports, error, phase), phase, 4)
+    finally:
+        if lockdown is not None:
+            try:
+                await asyncio.wait_for(lockdown.close(), timeout=CLOSE_TIMEOUT_SECONDS)
+            except BaseException:
+                pass
+
+
+async def read_live_control(tunnel: Any) -> Optional[bytes]:
+    """Prefer transport loss over a simultaneous control request; never retry."""
+    control_task = asyncio.create_task(read_stdin_line())
+    closed_task = asyncio.create_task(tunnel.wait_closed())
+    try:
+        done, _pending = await asyncio.wait(
+            (control_task, closed_task), return_when=asyncio.FIRST_COMPLETED,
+        )
+        if closed_task in done:
+            # Reading the result consumes a sanitized upstream failure too.
+            try:
+                closed_task.result()
+            except BaseException:
+                pass
+            return None
+        return control_task.result()
+    finally:
+        for task in (control_task, closed_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(control_task, closed_task, return_exceptions=True)
 
 
 async def close_persistent_context(dvt: Any, tunnel: Any) -> bool:
@@ -425,25 +598,21 @@ async def close_persistent_context(dvt: Any, tunnel: Any) -> bool:
     False result into a structured, privacy-safe protocol error after the Set
     acknowledgement; raw teardown exceptions are never serialized.
     """
-    succeeded = True
-    try:
-        await dvt.close()
-    except BaseException:
-        succeeded = False
-    try:
-        await tunnel.aclose()
-    except BaseException:
-        succeeded = False
-    return succeeded
+    dvt_closed = await close_bounded(dvt.close())
+    tunnel_closed = await close_bounded(tunnel.aclose())
+    return dvt_closed and tunnel_closed
 
 
 async def execute(command: str, request: Dict[str, Any], imports: BackendImports) -> int:
     allowed_fields = {"udid", "expectedProductType"}
+    optional_fields = set()
     if command in ("set", "set-persistent"):
         allowed_fields.update(("latitude", "longitude"))
-    elif command == "reveal-developer-mode":
+    elif command in ("reveal-developer-mode", "enable-wifi"):
         allowed_fields.add("expectedECID")
-    if set(request.keys()) != allowed_fields:
+    if command in ("probe", "set", "clear"):
+        optional_fields.update(("transport", "expectedECID"))
+    if not allowed_fields.issubset(request) or not set(request).issubset(allowed_fields | optional_fields):
         return fail("invalid_request", "request", 2)
 
     udid = parse_udid(request.get("udid"))
@@ -451,11 +620,22 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
     if udid is None or expected_product_type is None:
         return fail("invalid_request", "request", 2)
 
-    if command == "reveal-developer-mode":
+    if command in ("reveal-developer-mode", "enable-wifi"):
         expected_ecid = parse_ecid(request.get("expectedECID"))
         if expected_ecid is None:
             return fail("invalid_request", "request", 2)
+        if command == "enable-wifi":
+            return await enable_wifi(imports, udid, expected_product_type, expected_ecid)
         return await reveal_developer_mode(imports, udid, expected_product_type, expected_ecid)
+
+    transport = request.get("transport", "usb")
+    if transport not in ("usb", "wifi"):
+        return fail("invalid_request", "request", 2)
+    expected_ecid = None
+    if transport == "wifi" or "expectedECID" in request:
+        expected_ecid = parse_ecid(request.get("expectedECID"))
+        if expected_ecid is None:
+            return fail("invalid_request", "request", 2)
 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -470,7 +650,9 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
     dvt = None
     phase = "tunnel"
     try:
-        tunnel, rsd = await open_attested_target(imports, udid, expected_product_type)
+        tunnel, rsd = await open_attested_target(
+            imports, udid, expected_product_type, transport, expected_ecid,
+        )
         phase = "dvt"
         dvt, location = await with_location_service(imports, rsd)
         phase = "location_service"
@@ -513,7 +695,10 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
         emit("active", "assumedActive")
 
         while True:
-            control_line = await read_stdin_line()
+            control_line = await read_live_control(tunnel)
+            if control_line is None:
+                emit("error", "uncertain", code="connection_lost", phase="transport")
+                return 5
             control = parse_json_line(control_line)
             if control is None:
                 emit("error", "uncertain", code="internal_failure", phase="control")
@@ -536,17 +721,19 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
         return fail("developer_service_unavailable", "attestation")
     except DeveloperModeDisabledError:
         return fail("developer_mode_required", "developerMode")
+    except PairingRequiredError:
+        return fail("pairing_required", "pairing")
     except BaseException as error:  # structured allowlist only; never serialize error text
         return fail(map_exception(imports, error, phase), phase, 4)
     finally:
         if dvt is not None:
             try:
-                await dvt.close()
+                await asyncio.wait_for(dvt.close(), timeout=CLOSE_TIMEOUT_SECONDS)
             except BaseException:
                 pass
         if tunnel is not None:
             try:
-                await tunnel.aclose()
+                await asyncio.wait_for(tunnel.aclose(), timeout=CLOSE_TIMEOUT_SECONDS)
             except BaseException:
                 pass
 
@@ -571,13 +758,21 @@ def main() -> int:
         "set-persistent",
         "clear",
         "reveal-developer-mode",
+        "enable-wifi",
     ):
         return fail("invalid_request", "startup", 2)
     command = sys.argv[1]
     if command == "version":
         return version_command()
 
-    request = parse_json_line(sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1))
+    # Avoid BufferedReader read-ahead consuming a subsequent live control line.
+    initial_line = bytearray()
+    while len(initial_line) <= MAX_REQUEST_BYTES:
+        chunk = os.read(sys.stdin.fileno(), 1)
+        initial_line.extend(chunk)
+        if not chunk or chunk == b"\n":
+            break
+    request = parse_json_line(bytes(initial_line))
     if request is None:
         return fail("invalid_request", "request", 2)
     if sys.version_info[:2] != (3, 9):

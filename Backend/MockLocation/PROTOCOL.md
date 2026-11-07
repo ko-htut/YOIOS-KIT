@@ -1,14 +1,14 @@
 # YIOS Mock Location backend protocol
 
 The app launches `yios-location-backend` with exactly one command: `version`,
-`probe`, `set`, `set-persistent`, `clear`, or `reveal-developer-mode`. Except
+`probe`, `set`, `set-persistent`, `clear`, `reveal-developer-mode`, or `enable-wifi`. Except
 for `version`, the first stdin line is a JSON request. Output is
 newline-delimited JSON only. Identifiers, coordinates, tunnel addresses,
 upstream error text, tracebacks, and pairing records are never returned.
 
 Protocol version: `1`
 
-Backend version: `1.2.0`
+Backend version: `1.3.0`
 
 The backend accepts any syntactically valid iPhone ProductType rather than a
 model allowlist. `expectedProductType` is the exact ProductType freshly read
@@ -34,6 +34,44 @@ decimal coordinates:
 ```json
 {"udid":"<exact connected UDID>","expectedProductType":"iPhone15,2","latitude":"16.8409","longitude":"96.1735"}
 ```
+
+`probe`, `set`, and `clear` optionally accept `"transport":"usb"` (the
+default) or `"transport":"wifi"`. Wi-Fi additionally requires `expectedECID`:
+
+```json
+{"udid":"<exact trusted UDID>","expectedProductType":"iPhone15,2","expectedECID":"0x<1-16 uppercase hex digits>","transport":"wifi"}
+```
+
+Wi-Fi `set` also includes the coordinate fields. `expectedECID` may optionally
+be supplied on USB for the same additional RSD identity check. Every tunnel
+explicitly selects `USB` or `Network`; there is no fallback, automatic pairing,
+or transport handoff. A Wi-Fi request first opens the exact Network lockdown,
+checks its actual mux transport, UDID, ProductType, ECID, existing pairing, and
+supported OS, and closes it. The tunnel independently forces Network and checks
+its pairing and actual mux transport before starting CoreDeviceProxy. Its RSD
+must agree on UDID, ProductType, and ECID before opening the DVT location channel.
+Any mismatch stops without sending a location request. The patched upstream
+source and its modification notice accompany the payload.
+
+YIOS-KIT passes `auto_reconnect=False` before lockdown initialization on direct
+and tunneled connections, including RSD's remote lockdown. The pinned patch
+propagates transport/session failures without reestablishing or replaying a
+request; upstream defaults for other callers remain unchanged.
+
+`enable-wifi` accepts exactly the same three identity fields as
+`reveal-developer-mode`. It connects only over USB, attests the exact device and
+actual USB transport, requires existing pairing, then reads
+`get_enable_wifi_connections()`. After `hello` and `attested`, it emits
+`requestDispatched`, calls `set_enable_wifi_connections(True)` only if needed,
+reads the flag back after a change, and emits `wifiEnabled` / `ok` only when
+the flag is true. This acknowledges the setting, not network
+discovery or a working developer tunnel. It never opens DVT, reveals/enables
+Developer Mode, pairs, or retries. The trusted iPhone must later appear as
+`Network` in Apple usbmuxd and stay reachable from this Mac on the same network.
+
+`set-persistent` remains a separate USB-only experiment. It rejects transport
+fields, including Wi-Fi: keeping a live Wi-Fi session is not phone-side
+persistence.
 
 The Settings-only Developer Mode preparation request accepts exactly:
 
@@ -77,6 +115,15 @@ After `active`, a long-running `set` accepts one control object per line.
 `clear` sends the stop-simulation request through the same DVT channel and
 exits. `quit` closes the channel without claiming a reset; the app must keep the
 simulation state marked uncertain.
+
+Live `set` races a cancellable stdin pipe reader against the actual tunnel
+transport's closure. Loss emits exactly an `error` with `status: uncertain`,
+`code: connection_lost`, and `phase: transport`, exits nonzero, and closes its
+contexts. It does not send Clear or retry after loss. Canceling a stdin/watcher
+wait never leaves a blocked executor thread or cancels the tunnel reader.
+Each context close has a five-second timeout. A silent Wi-Fi outage can take
+the underlying TCP/usbmux transport time to report; the backend does not claim
+instant independent network-health or GPS verification.
 
 ```json
 {"command":"clear"}

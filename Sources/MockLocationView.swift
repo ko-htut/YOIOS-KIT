@@ -77,6 +77,10 @@ struct MockLocationView: View {
         .onChange(of: controller.shouldOfferDeveloperModeOptionRequest) { shouldOffer in
             if shouldOffer { showsReadinessDetails = true }
         }
+        .onChange(of: controller.selectedTransport) { transport in
+            if transport == .wifi { persistentModeEnabled = false }
+            inputError = nil
+        }
     }
 
     private var statusHero: some View {
@@ -99,7 +103,7 @@ struct MockLocationView: View {
                 if controller.isBusy {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Keep the iPhone connected and unlocked.")
+                        Text("Keep the iPhone unlocked and the selected connection available.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -147,6 +151,8 @@ struct MockLocationView: View {
             accent: .blue
         ) {
             VStack(alignment: .leading, spacing: 18) {
+                transportControls
+
                 Text("Enter latitude and longitude, or choose a city preset. Coordinates are sent to the iPhone and are not saved in the local safety record.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -179,21 +185,23 @@ struct MockLocationView: View {
                     }
                 }
 
-                Toggle(isOn: $persistentModeEnabled) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Persistent until Clear/Reboot (Experimental)")
-                            .font(.callout.weight(.semibold))
-                        Text("The test location may stay active after USB is disconnected. Check the result on your iPhone; persistence is experimental and cannot be verified automatically. Reconnect this iPhone to return to real location.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                if controller.selectedTransport == .usb {
+                    Toggle(isOn: $persistentModeEnabled) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Persistent until Clear/Reboot (Experimental)")
+                                .font(.callout.weight(.semibold))
+                            Text("The test location may stay active after USB is disconnected. Check the result on your iPhone; persistence is experimental and cannot be verified automatically. Reconnect this iPhone to return to real location.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .toggleStyle(.switch)
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
+                    .disabled(controller.isBusy || controller.isAssumedActive || controller.reviewRequired)
+                    .accessibilityIdentifier("mockLocationPersistentModeToggle")
                 }
-                .toggleStyle(.switch)
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
-                .disabled(controller.isBusy || controller.isAssumedActive || controller.reviewRequired)
-                .accessibilityIdentifier("mockLocationPersistentModeToggle")
 
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) {
@@ -265,6 +273,59 @@ struct MockLocationView: View {
         .accessibilityIdentifier("mockLocationCoordinatePanel")
     }
 
+    private var transportControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Connection")
+                .font(.callout.weight(.semibold))
+            Picker("Connection", selection: Binding(
+                get: { controller.selectedTransport },
+                set: { controller.selectTransport($0) }
+            )) {
+                ForEach(MockLocationTransport.allCases) { transport in
+                    Text(transport.displayName).tag(transport)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 320)
+            .disabled(!controller.canSelectTransport)
+            .accessibilityIdentifier("mockLocationTransportPicker")
+
+            if controller.selectedTransport == .wifi {
+                if controller.isWiFiSessionActive {
+                    Label("Wi-Fi session active · USB may be disconnected", systemImage: "wifi")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.green)
+                        .accessibilityIdentifier("mockLocationWiFiActiveLabel")
+                } else {
+                    Text("First connect and unlock this iPhone by USB and accept Trust. Enable Wi-Fi Connection, then Check Readiness while the cable is still connected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        controller.enableWiFiConnection()
+                    } label: {
+                        Label("Enable Wi-Fi Connection", systemImage: "wifi")
+                    }
+                    .disabled(!controller.canEnableWiFi)
+                    .accessibilityIdentifier("mockLocationEnableWiFiButton")
+                }
+                Text("Keep the iPhone and Mac on the same Wi-Fi, the Mac awake, and YIOS-KIT open. Wait for the Wi-Fi session to become active before unplugging. This uses a live session and does not switch to USB automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Keep the cable connected during a live USB session. Choose Wi-Fi to start a live connection that can continue after unplugging.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.045)))
+    }
+
     private func coordinateField(
         title: String,
         text: Binding<String>,
@@ -286,11 +347,13 @@ struct MockLocationView: View {
     private var targetPanel: some View {
         MockLocationPanel(title: "Exact target", systemImage: "scope", accent: targetPanelAccent) {
             VStack(spacing: 0) {
-                MockLocationFactRow(label: "Mode", value: model.snapshot.mode.title)
+                MockLocationFactRow(label: "Connection", value: controller.isWiFiSessionActive ? "Wi-Fi live session" : controller.selectedTransport.displayName)
                 Divider()
-                MockLocationFactRow(label: "Product", value: model.snapshot.productType ?? "Unavailable")
+                MockLocationFactRow(label: controller.isWiFiSessionActive ? "Mode at start" : "Mode", value: controller.isWiFiSessionActive ? "Normal iOS · attested" : model.snapshot.mode.title)
                 Divider()
-                MockLocationFactRow(label: "iOS", value: versionSummary)
+                MockLocationFactRow(label: "Product", value: controller.liveWiFiProductType ?? model.snapshot.productType ?? "Unavailable")
+                Divider()
+                MockLocationFactRow(label: controller.isWiFiSessionActive ? "iOS support" : "iOS", value: controller.isWiFiSessionActive ? "17.4+ · probe passed" : versionSummary)
                 Divider()
                 MockLocationFactRow(label: "Connected token", value: controller.connectedTargetToken ?? "Unavailable", monospaced: true)
                 if let recorded = controller.recordedTargetToken {
@@ -309,9 +372,7 @@ struct MockLocationView: View {
 
     private var readinessPanel: some View {
         MockLocationPanel(title: "Before you start", systemImage: "checkmark.shield", accent: readinessColor) {
-            Text(developerChecksReady
-                 ? "The developer connection is ready. Enter your coordinate to continue."
-                 : "Connect and unlock your iPhone, accept Trust, then check the developer connection.")
+            Text(readinessGuidance)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -365,7 +426,7 @@ struct MockLocationView: View {
                 }
                 Divider()
                 readinessRow(
-                    title: "iOS 17+ USB tunnel",
+                    title: controller.selectedTransport == .wifi ? "Wi-Fi developer tunnel" : "USB developer tunnel",
                     detail: developerChecksReady ? "Probe succeeded" : readinessDetail(for: .tunnelUnavailable),
                     state: developerChecksReady ? .ready : readinessState(for: .tunnelUnavailable)
                 )
@@ -404,6 +465,7 @@ struct MockLocationView: View {
                 VStack(alignment: .leading, spacing: 10) {
                 safetyLine("The Set action is always pinned to one verified UDID/product and is rechecked immediately before launch.")
                 safetyLine("Simulation is reported as assumed active because the developer service has no getter.")
+                safetyLine("Wi-Fi uses one live session on the same verified iPhone. Keep the Mac awake and the network connected; a lost session is not retried automatically.")
                 safetyLine("Experimental persistence is recorded only after Set returns and the backend exits cleanly without sending Clear; it is never described as verified or permanent.")
                 safetyLine("Recovery, Restore, Factory Reset, power controls, and other device mutations must remain blocked while simulation is active or uncertain.")
                 safetyLine("The journal stores only a one-way target fingerprint and state timestamps—never coordinates or raw device identifiers.")
@@ -438,7 +500,7 @@ struct MockLocationView: View {
             inputError = nil
             controller.setLocation(
                 coordinate,
-                mode: persistentModeEnabled
+                mode: controller.selectedTransport == .usb && persistentModeEnabled
                     ? .persistentUntilClearOrReboot
                     : .liveSession
             )
@@ -458,6 +520,9 @@ struct MockLocationView: View {
     }
 
     private var identityMatchText: String {
+        if controller.isWiFiSessionActive {
+            return "Stable iPhone identity verified by live Wi-Fi session"
+        }
         switch controller.safetyRecordMatch {
         case .none:
             return targetReady ? "ECID + UDID + USB captured" : "Scan required"
@@ -473,6 +538,7 @@ struct MockLocationView: View {
     }
 
     private var identityRowState: RowState {
+        if controller.isWiFiSessionActive { return .ready }
         switch controller.safetyRecordMatch {
         case .none:
             return targetReady ? .ready : .warning
@@ -501,16 +567,37 @@ struct MockLocationView: View {
     }
 
     private var setButtonTitle: String {
-        persistentModeEnabled
+        if controller.selectedTransport == .wifi { return "Start Wi-Fi Mock Location" }
+        return persistentModeEnabled
             ? "Set Persistent Location (Experimental)"
             : "Start Mock Location"
     }
 
     private var clearGuidance: String {
+        if controller.isWiFiSessionActive {
+            return "Return to real location through the same live Wi-Fi session before quitting. The USB cable is not required while this session remains connected."
+        }
+        if controller.selectedTransport == .wifi {
+            return "Use Return to Real Location when you finish. If the Wi-Fi session is lost, reconnect the same iPhone and use the reset action offered by YIOS-KIT."
+        }
         if persistentModeEnabled || controller.isAssumedPersistent {
             return "Persistent mode may outlive a cable disconnect. Reconnect the same iPhone and use this button to restore real location; app quit remains blocked until that reset is recorded."
         }
         return "Use this before disconnecting or quitting while the live simulation session may be active."
+    }
+
+    private var readinessGuidance: String {
+        if controller.isWiFiSessionActive {
+            return "The live Wi-Fi session is connected to the verified iPhone. The USB cable may be disconnected."
+        }
+        if developerChecksReady {
+            return controller.selectedTransport == .wifi
+                ? "The Wi-Fi developer connection was checked. Start Mock Location while USB is connected, then wait for the live Wi-Fi session before unplugging."
+                : "The developer connection is ready. Enter your coordinate to continue."
+        }
+        return controller.selectedTransport == .wifi
+            ? "Connect and trust this iPhone over USB, enable Wi-Fi Connection, then check the Wi-Fi developer connection."
+            : "Connect and unlock your iPhone, accept Trust, then check the developer connection."
     }
 
     private enum RowState { case ready, warning, waiting }
@@ -600,6 +687,7 @@ struct MockLocationView: View {
 
     private var statusBadge: String {
         if controller.reviewRequired { return "REVIEW REQUIRED" }
+        if controller.isWiFiSessionActive { return "WI-FI SESSION ACTIVE" }
         if controller.isAssumedPersistent { return "PERSISTENCE ASSUMED" }
         if controller.isAssumedActive { return "ASSUMED ACTIVE" }
         if controller.isBusy { return "WORKING" }

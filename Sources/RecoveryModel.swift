@@ -459,6 +459,9 @@ final class RecoveryModel: ObservableObject {
                     target: target,
                     originalConnectionPin: originalConnectionPin
                 ) ?? false
+            },
+            confirmEnableWiFi: { [weak self] target in
+                self?.confirmMockLocationWiFiSetup(target: target) ?? false
             }
         ))
         appendLog("YIOS-KIT started.")
@@ -542,7 +545,11 @@ final class RecoveryModel: ObservableObject {
         let persistenceWarning = isPersistent
             ? "\n\nExperimental persistent mode waits for Apple's Set acknowledgement, then closes the developer session without sending Clear. The location may survive cable disconnect until Return to Real Location or an iPhone reboot, but iOS provides no getter and this behavior is not guaranteed on every build. YIOS-KIT keeps its safety lock until an exact-target Clear is recorded; even after reboot, reconnect and send Return to Real Location to clear that record."
             : ""
-        alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\nCoordinate: \(coordinate.latitudeArgument), \(coordinate.longitudeArgument)\n\nThis can affect Maps, navigation, location sharing, and every app that reads location until Return to Real Location is sent. Apps may detect that the location is simulated. iOS provides no getter to verify the active coordinate.\(persistenceWarning)"
+        let transport = mockLocationController.selectedTransport
+        let connectionDetail = transport == .wifi
+            ? "\n\nWi-Fi live session: keep USB attached until YIOS-KIT reports the session is active, then you may unplug. Keep this Mac awake, YIOS-KIT open, and both devices on the same network. Use Return to Real Location over the same live session when finished."
+            : ""
+        alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\nConnection: \(transport.displayName)\nCoordinate: \(coordinate.latitudeArgument), \(coordinate.longitudeArgument)\n\nThis can affect Maps, navigation, location sharing, and every app that reads location until Return to Real Location is sent. Apps may detect that the location is simulated. iOS provides no getter to verify the active coordinate.\(persistenceWarning)\(connectionDetail)"
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: isPersistent ? "Set Experimental Persistent Location" : "Set Test Location")
         return alert.runModal() == .alertSecondButtonReturn
@@ -557,6 +564,16 @@ final class RecoveryModel: ObservableObject {
         alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\n\nPairing and Trust were freshly verified before this dialog and will be verified again after confirmation. YIOS-KIT will send one non-reboot Apple request to this exact target. It does not enable Developer Mode, restart or erase the iPhone, change the simulated location, retry automatically, or target another device.\n\nAfter the request is accepted, reopen Settings > Privacy & Security. You must still turn on Developer Mode yourself and approve Apple's restart and on-device confirmation."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Request Settings Option")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func confirmMockLocationWiFiSetup(target: MockLocationExactTarget) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Enable this iPhone's Wi-Fi connection to this Mac?"
+        alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\n\nYIOS-KIT will enable Apple's Wi-Fi connection setting through the trusted USB connection. Pairing and Trust are checked again after confirmation. This setting can remain enabled after the session ends. It does not change your location.\n\nKeep the cable connected for Check Readiness and Set. A separate exact-target Wi-Fi connection must pass before you unplug. The Mac and iPhone must share a network."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Enable Wi-Fi Connection")
         return alert.runModal() == .alertSecondButtonReturn
     }
 
@@ -595,7 +612,7 @@ final class RecoveryModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Return this reconnected iPhone to real location?"
-        alert.informativeText = "The stable ECID + UDID + product identity matches the iPhone used for the experimental persistent Set, but its USB connection changed.\n\nOriginal connection: \(originalConnectionPin.displayToken)\nCurrent verified connection: \(target.pin.displayToken)\nUDID: …\(target.udid.suffix(8))\n\nPairing and Trust were freshly verified before this dialog and will be verified again after confirmation. This sends one Return to Real Location request to this exact current target. It does not erase data, change Developer Mode, retry automatically, or target any other iPhone."
+        alert.informativeText = "The stable ECID + UDID + product identity matches the iPhone in the saved Mock Location session, but its USB connection changed.\n\nOriginal connection: \(originalConnectionPin.displayToken)\nCurrent verified connection: \(target.pin.displayToken)\nUDID: …\(target.udid.suffix(8))\n\nPairing and Trust were freshly verified before this dialog and will be verified again after confirmation. This sends one Return to Real Location request to this exact current target. It does not erase data, change Developer Mode, retry automatically, or target any other iPhone."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Send Reset to This iPhone")
         return alert.runModal() == .alertSecondButtonReturn

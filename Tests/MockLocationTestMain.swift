@@ -12,6 +12,20 @@ struct MockLocationTestMain {
         init(_ value: Value) { self.value = value }
     }
 
+    @MainActor
+    private final class WiFiHostState {
+        var snapshot = MockLocationTestMain.targetFixture(productType: "iPhone18,3")
+        var gate: MockLocationHostGate = .idle
+        var trustResults: [Bool] = []
+        var preflightCount = 0
+        var enableConfirmationCount = 0
+        var setConfirmationCount = 0
+        var reconnectConfirmationCount = 0
+        var confirmEnable = true
+        var confirmReconnect = true
+        var afterEnableConfirmation: (() -> Void)?
+    }
+
     static func main() {
         var failures: [String] = []
         func expect(_ condition: Bool, _ message: String) {
@@ -24,6 +38,7 @@ struct MockLocationTestMain {
         testJournal(expect: expect)
         testBackendCommand(expect: expect)
         testBackendProtocol(expect: expect)
+        testWiFiCommandAndProtocol(expect: expect)
         testBundledResolver(expect: expect)
         testOfflineController(expect: expect)
         testDeveloperModeOptionLifecycle(expect: expect)
@@ -31,6 +46,9 @@ struct MockLocationTestMain {
         testForgetUnavailableRecord(expect: expect)
         testControllerLifecycle(expect: expect)
         testGenericControllerAttestation(expect: expect)
+        testWiFiSetupGuards(expect: expect)
+        testWiFiSessionLifecycle(expect: expect)
+        testWiFiConnectionLossRecovery(expect: expect)
         testPersistentFailureLifecycle(expect: expect)
         testPersistentClearGuards(expect: expect)
         testOutOfOrderActiveKeepsDeadline(expect: expect)
@@ -246,7 +264,56 @@ struct MockLocationTestMain {
                 updatedAt: created.addingTimeInterval(2)
             )
             try store.write(persistent)
-            expect(try store.load() == persistent, "schema-v2 persistent journal must round-trip with separate stable and connection pins")
+            expect(try store.load() == persistent, "persistent journal must round-trip with separate stable and connection pins")
+
+            let wifiActive = MockLocationJournalRecord(
+                state: .assumedActive,
+                pin: target.pin,
+                stablePin: target.stablePin,
+                transport: .wifi,
+                requestDispatched: true,
+                createdAt: created,
+                updatedAt: created.addingTimeInterval(3)
+            )
+            try store.write(wifiActive)
+            expect(try store.load() == wifiActive, "schema-v3 Wi-Fi recovery must round-trip its explicit transport")
+            let wifiText = try String(contentsOf: url, encoding: .utf8)
+            expect(wifiText.contains("wifi"), "Wi-Fi journal must retain transport without connection addresses")
+            expect(!wifiText.contains(target.udid) && !wifiText.localizedCaseInsensitiveContains(target.ecid), "Wi-Fi journal must never retain raw stable device identifiers")
+            expect(!wifiText.contains(String(target.locationID)) && !wifiText.contains("16.8409") && !wifiText.contains("96.1735"), "Wi-Fi journal must contain neither USB location nor coordinates")
+
+            var schemaTwoObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(persistent)) as? [String: Any] ?? [:]
+            schemaTwoObject["schema"] = 2
+            schemaTwoObject.removeValue(forKey: "transport")
+            let schemaTwo = try JSONDecoder().decode(MockLocationJournalRecord.self, from: JSONSerialization.data(withJSONObject: schemaTwoObject))
+            expect(try schemaTwo.validated().transport == .usb, "existing schema-v2 journals must default missing transport to USB")
+            expect(schemaTwo.stablePin == persistent.stablePin && schemaTwo.pin == persistent.pin, "schema migration must preserve the original stable and connection fingerprints")
+
+            var forgedWiFiObject = schemaTwoObject
+            forgedWiFiObject["transport"] = "wifi"
+            let forgedWiFi = try JSONDecoder().decode(MockLocationJournalRecord.self, from: JSONSerialization.data(withJSONObject: forgedWiFiObject))
+            do {
+                _ = try forgedWiFi.validated()
+                expect(false, "pre-Wi-Fi schemas must reject a forged Network transport")
+            } catch {
+                expect(true, "legacy schema transport confusion must fail closed")
+            }
+            let persistentWiFi = MockLocationJournalRecord(
+                state: .assumedPersistent,
+                pin: target.pin,
+                stablePin: target.stablePin,
+                setMode: .persistentUntilClearOrReboot,
+                transport: .wifi,
+                requestDispatched: true,
+                createdAt: created,
+                updatedAt: created.addingTimeInterval(4)
+            )
+            do {
+                _ = try persistentWiFi.validated()
+                expect(false, "Wi-Fi journals must reject unsupported one-shot persistent mode")
+            } catch {
+                expect(true, "invalid Wi-Fi mode must fail closed")
+            }
 
             var legacyObject = try JSONSerialization.jsonObject(
                 with: JSONEncoder().encode(pending)
@@ -254,10 +321,12 @@ struct MockLocationTestMain {
             legacyObject["schema"] = 1
             legacyObject.removeValue(forKey: "stableTargetFingerprint")
             legacyObject.removeValue(forKey: "setMode")
+            legacyObject.removeValue(forKey: "transport")
             let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
             let legacy = try JSONDecoder().decode(MockLocationJournalRecord.self, from: legacyData)
             expect(try legacy.validated().schema == 1, "schema-v1 journals must remain decodable for conservative recovery")
             expect(legacy.stablePin == nil, "schema-v1 journals must not invent a stable identity pin")
+            expect(legacy.transport == .usb, "schema-v1 journals must default missing transport to USB")
 
             var forgedLegacyObject = legacyObject
             forgedLegacyObject["state"] = "assumedPersistent"
@@ -466,6 +535,47 @@ struct MockLocationTestMain {
             expect(true, "oversized backend lines must be bounded")
         } else {
             expect(false, "oversized backend line must fail closed")
+        }
+    }
+
+    private static func testWiFiCommandAndProtocol(expect: (Bool, String) -> Void) {
+        guard let target = try? MockLocationExactTarget(snapshot: targetFixture()),
+              let coordinate = try? MockLocationCoordinate(latitude: 16.8409, longitude: 96.1735) else {
+            expect(false, "Wi-Fi command fixtures must initialize")
+            return
+        }
+        let backend = MockLocationBackendDescriptor(executableURL: URL(fileURLWithPath: "/fixture/private-backend"))
+        let commands = [
+            MockLocationCommandBuilder.probe(backend: backend, target: target, transport: .wifi),
+            MockLocationCommandBuilder.set(backend: backend, target: target, coordinate: coordinate, transport: .wifi),
+            MockLocationCommandBuilder.clear(backend: backend, target: target, transport: .wifi)
+        ]
+        for command in commands {
+            let request = try? JSONSerialization.jsonObject(with: Data(command.initialRequest.dropLast())) as? [String: Any]
+            expect(request?["transport"] as? String == "wifi", "Wi-Fi commands must force the network transport over private stdin")
+            expect(request?["expectedECID"] as? String == target.ecid, "Wi-Fi commands must attest the exact stable ECID")
+            expect(request?["udid"] as? String == target.udid, "Wi-Fi commands must pin the bootstrapped UDID")
+            expect(request?["expectedProductType"] as? String == target.productType, "Wi-Fi commands must pin the exact ProductType")
+            expect(command.arguments == [command.operation.rawValue], "Wi-Fi identifiers and coordinates must never enter argv")
+        }
+        let enable = MockLocationCommandBuilder.enableWiFi(backend: backend, target: target)
+        let setupRequest = try? JSONSerialization.jsonObject(with: Data(enable.initialRequest.dropLast())) as? [String: Any]
+        expect(enable.arguments == ["enable-wifi"] && enable.operation == .enableWiFi, "Wi-Fi setup must have its own allowlisted USB operation")
+        expect(setupRequest?["expectedECID"] as? String == target.ecid, "Wi-Fi setup must pin ECID before changing the connection preference")
+        expect(setupRequest?["udid"] as? String == target.udid && setupRequest?["expectedProductType"] as? String == target.productType, "Wi-Fi setup must preserve all stable target fields")
+        expect(setupRequest?["latitude"] == nil && setupRequest?["longitude"] == nil, "Wi-Fi setup must never carry a coordinate")
+
+        let enabled = MockLocationBackendEventParser.parse(line: #"{"event":"wifiEnabled","status":"ok"}"#)
+        if case .success(let event) = enabled {
+            expect(event.kind == .wifiEnabled, "Wi-Fi setup acknowledgement must parse distinctly from location activation")
+        } else {
+            expect(false, "valid Wi-Fi setup acknowledgement must parse")
+        }
+        let lost = MockLocationBackendEventParser.parse(line: #"{"event":"error","status":"uncertain","code":"connection_lost","phase":"transport"}"#)
+        if case .success(let event) = lost {
+            expect(event.errorCode == .connectionLost, "connection loss must remain a structured privacy-safe error")
+        } else {
+            expect(false, "transport connection loss must parse")
         }
     }
 
@@ -1196,6 +1306,269 @@ exit 2
             secondTrustFailure.lastError == MockLocationReadinessIssue.pairingRequired.userDescription,
             "a failed second Trust check must report the pairing requirement"
         )
+    }
+
+    private static func writeWiFiBackendFixture(
+        directory: URL,
+        lossTrigger: URL? = nil
+    ) throws -> (executable: URL, requestLog: URL) {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("private-fake-backend")
+        let requestLog = directory.appendingPathComponent("requests.jsonl")
+        var script = #"""
+#!/bin/zsh
+IFS= read -r initial_request
+/usr/bin/printf '%s|%s\n' "$1" "$initial_request" >> REQUEST_LOG
+/usr/bin/printf '%s\n' '{"event":"hello","protocol":1,"backend_version":"1.3.0"}'
+/usr/bin/printf '%s\n' '{"event":"attested","product_type":"iPhone18,3"}'
+if [[ "$1" == "enable-wifi" ]]; then
+  /usr/bin/printf '%s\n' '{"event":"requestDispatched"}'
+  /usr/bin/printf '%s\n' '{"event":"wifiEnabled","status":"ok"}'
+  exit 0
+fi
+/usr/bin/printf '%s\n' '{"event":"ready"}'
+case "$1" in
+  probe)
+    exit 0
+    ;;
+  set)
+    /usr/bin/printf '%s\n' '{"event":"requestDispatched"}'
+    /usr/bin/printf '%s\n' '{"event":"active"}'
+    LIVE_CONTROL
+    /usr/bin/printf '%s|%s\n' 'live-control' "$clear_request" >> REQUEST_LOG
+    /usr/bin/printf '%s\n' '{"event":"requestDispatched"}'
+    /usr/bin/printf '%s\n' '{"event":"clearSent"}'
+    exit 0
+    ;;
+  clear)
+    /usr/bin/printf '%s\n' '{"event":"requestDispatched"}'
+    /usr/bin/printf '%s\n' '{"event":"clearSent"}'
+    exit 0
+    ;;
+esac
+exit 2
+"""#
+        // Paths are quoted as data; fixture requests never reach a device.
+        let quotedLog = "'" + requestLog.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        script = script.replacingOccurrences(of: "REQUEST_LOG", with: quotedLog)
+        let liveControl: String
+        if let lossTrigger {
+            let quotedTrigger = "'" + lossTrigger.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            liveControl = """
+            while [[ ! -f \(quotedTrigger) ]]; do /bin/sleep 0.02; done
+                /usr/bin/printf '%s\\n' '{"event":"error","status":"uncertain","code":"connection_lost","phase":"transport"}'
+                exit 5
+            """
+        } else {
+            liveControl = "IFS= read -r clear_request"
+        }
+        script = script.replacingOccurrences(of: "LIVE_CONTROL", with: liveControl)
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return (executable, requestLog)
+    }
+
+    private static func makeWiFiController(
+        executable: URL,
+        state: WiFiHostState,
+        stored: Box<MockLocationJournalRecord?>
+    ) -> MockLocationController {
+        let controller = MockLocationController(
+            resolveBackend: { .success(MockLocationBackendDescriptor(executableURL: executable)) },
+            journal: MockLocationJournalClient(
+                load: { stored.value },
+                write: { stored.value = try $0.validated() },
+                remove: { stored.value = nil }
+            )
+        )
+        var callbacks = MockLocationController.HostCallbacks(
+            currentSnapshot: { state.snapshot },
+            hostGate: { state.gate },
+            requestFreshEvidence: { completion in
+                let index = state.preflightCount
+                state.preflightCount += 1
+                let trusted = index < state.trustResults.count ? state.trustResults[index] : true
+                completion(MockLocationFreshEvidence(snapshot: state.snapshot, pairingAndTrustVerified: trusted))
+            },
+            confirmForgetUnavailableRecord: { _ in false },
+            confirmDeveloperModeOptionRequest: { _ in false },
+            confirmSet: { _, _, _ in
+                state.setConfirmationCount += 1
+                return true
+            },
+            confirmUnpinnedClear: { _ in false },
+            confirmReconnectedClear: { _, _ in
+                state.reconnectConfirmationCount += 1
+                return state.confirmReconnect
+            }
+        )
+        callbacks.confirmEnableWiFi = { _ in
+            state.enableConfirmationCount += 1
+            state.afterEnableConfirmation?()
+            return state.confirmEnable
+        }
+        controller.configureHost(callbacks)
+        return controller
+    }
+
+    private static func testWiFiSetupGuards(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-WiFi-Setup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            for scenario in ["success", "cancel", "first-trust", "second-trust", "changed-after-confirmation"] {
+                let fixture = try writeWiFiBackendFixture(directory: directory.appendingPathComponent(scenario))
+                let state = WiFiHostState()
+                let stored = Box<MockLocationJournalRecord?>(nil)
+                switch scenario {
+                case "cancel": state.confirmEnable = false
+                case "first-trust": state.trustResults = [false]
+                case "second-trust": state.trustResults = [true, false]
+                case "changed-after-confirmation":
+                    state.afterEnableConfirmation = { state.snapshot.ecid = "0xFFFFFFFF" }
+                default: break
+                }
+                let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+                controller.selectTransport(.wifi)
+                expect(controller.canEnableWiFi, "\(scenario): exact USB bootstrap must enable the guarded Wi-Fi setup action")
+                controller.enableWiFiConnection()
+                waitUntil(timeout: 3) { !controller.isBusy }
+                expect(stored.value == nil, "\(scenario): Wi-Fi setup must not alter the simulation safety journal")
+                expect(!controller.isAssumedActive && !controller.reviewRequired, "\(scenario): Wi-Fi setup must never claim an active simulated location")
+                let launched = FileManager.default.fileExists(atPath: fixture.requestLog.path)
+                if scenario == "success" {
+                    expect(launched, "successful Wi-Fi setup must launch its exact USB operation")
+                    expect(state.preflightCount == 2 && state.enableConfirmationCount == 1, "Wi-Fi setup must verify Trust before and after explicit confirmation")
+                    expect(controller.readiness == .notChecked, "enabling Wi-Fi must require an independent Network readiness probe")
+                } else {
+                    expect(!launched, "\(scenario): rejected Wi-Fi setup must stop before launching a device operation")
+                    expect(state.preflightCount == (scenario == "first-trust" || scenario == "cancel" ? 1 : 2), "\(scenario): setup must stop at the failing guard")
+                }
+                expect(!controller.blocksDeviceMutation, "\(scenario): completed Wi-Fi setup must release its temporary mutation lock")
+            }
+        } catch {
+            expect(false, "Wi-Fi setup fixture could not be created")
+        }
+    }
+
+    private static func testWiFiSessionLifecycle(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-WiFi-Live-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            let fixture = try writeWiFiBackendFixture(directory: directory)
+            let state = WiFiHostState()
+            let stored = Box<MockLocationJournalRecord?>(nil)
+            let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+            controller.checkReadiness()
+            waitUntil(timeout: 3) { controller.canSetLocation }
+            expect(controller.canSetLocation, "USB bootstrap fixture must first reach USB readiness")
+            controller.selectTransport(.wifi)
+            expect(controller.selectedTransport == .wifi && !controller.canSetLocation, "changing transport must invalidate USB readiness")
+            controller.checkReadiness()
+            waitUntil(timeout: 3) { controller.canSetLocation }
+            expect(controller.canSetLocation, "an explicitly selected Wi-Fi readiness probe must permit live Set")
+
+            let coordinate = try MockLocationCoordinate(latitude: 16.8409, longitude: 96.1735)
+            let preflightBeforePersistent = state.preflightCount
+            controller.setLocation(coordinate, mode: .persistentUntilClearOrReboot)
+            expect(!controller.isBusy && stored.value == nil, "Wi-Fi must reject the experimental one-shot mode in core logic")
+            expect(state.preflightCount == preflightBeforePersistent && state.setConfirmationCount == 0, "rejected Wi-Fi persistence must never launch a preflight or confirmation")
+
+            controller.setLocation(coordinate)
+            waitUntil(timeout: 3) { controller.isWiFiSessionActive }
+            expect(controller.isWiFiSessionActive && controller.isAssumedActive, "Wi-Fi Set must reach active only after ordered backend acknowledgement")
+            expect(controller.liveWiFiProductType == "iPhone18,3", "live Wi-Fi identity must come from the attested run")
+            expect(!controller.canSelectTransport, "a live Network session must lock its selected transport")
+            controller.selectTransport(.usb)
+            expect(controller.selectedTransport == .wifi, "an active Wi-Fi session must never switch its live channel to USB")
+            expect(stored.value?.transport == .wifi && stored.value?.state == .assumedActive, "Wi-Fi acknowledgement must durably retain its recovery transport")
+            let preflightBeforeClear = state.preflightCount
+            state.snapshot = DeviceSnapshot()
+            controller.refreshLocalState()
+            expect(controller.isWiFiSessionActive && !controller.reviewRequired, "expected USB removal must preserve the already-attested live Wi-Fi session")
+            expect(controller.canReturnToRealLocation, "the captured Network session must support Clear without a USB snapshot")
+
+            var different = targetFixture(productType: "iPhone18,3")
+            different.ecid = "0xABCDEF1234"
+            different.udid = "00008030-00ABCDEF12345678"
+            different.productType = "iPhone15,4"
+            state.snapshot = different
+            controller.refreshLocalState()
+            expect(controller.isWiFiSessionActive && !controller.reviewRequired, "a different USB phone must not take ownership of the attested Network channel")
+            expect(controller.liveWiFiProductType == "iPhone18,3", "an unrelated USB ProductType must never replace the live Wi-Fi target facts")
+            expect(controller.blocksDeviceMutation, "live Wi-Fi must hold the app-wide mutation lock even when another phone is plugged in")
+
+            controller.returnToRealLocation()
+            waitUntil(timeout: 3) { !controller.blocksDeviceMutation }
+            if case .resetRequestSent = controller.simulationKnowledge {
+                expect(true, "same-channel Wi-Fi Clear must report only that the reset request was sent")
+            } else {
+                expect(false, "same-channel Wi-Fi Clear must complete without requiring the unrelated USB phone")
+            }
+            expect(state.preflightCount == preflightBeforeClear, "same-channel Wi-Fi Clear must not run a USB Trust probe against another connected phone")
+            expect(stored.value == nil && !controller.blocksDeviceMutation, "acknowledged Wi-Fi Clear must remove the journal and release the lock")
+            let log = try String(contentsOf: fixture.requestLog, encoding: .utf8)
+            let lines = log.split(separator: "\n").map(String.init)
+            expect(lines.contains { $0.hasPrefix("probe|") && $0.contains("\"transport\":\"wifi\"") }, "Wi-Fi readiness must actually select Network in the private backend request")
+            expect(lines.contains { $0.hasPrefix("set|") && $0.contains("\"transport\":\"wifi\"") }, "Wi-Fi live Set must actually select Network in the private backend request")
+            expect(lines.filter { $0.hasPrefix("live-control|") }.count == 1, "Wi-Fi Clear must use exactly one command on the captured session")
+            expect(!lines.contains { $0.hasPrefix("clear|") }, "live Wi-Fi Clear must never discover or launch a second target session")
+            expect(!lines.contains { $0.hasPrefix("set-persistent|") }, "core Wi-Fi rejection must prevent one-shot persistence dispatch")
+        } catch {
+            expect(false, "Wi-Fi lifecycle fixture failed")
+        }
+    }
+
+    private static func testWiFiConnectionLossRecovery(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-WiFi-Loss-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            let lossTrigger = directory.appendingPathComponent("disconnect-network")
+            let fixture = try writeWiFiBackendFixture(directory: directory, lossTrigger: lossTrigger)
+            let state = WiFiHostState()
+            let originalSnapshot = state.snapshot
+            let stored = Box<MockLocationJournalRecord?>(nil)
+            let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+            controller.selectTransport(.wifi)
+            controller.checkReadiness()
+            waitUntil(timeout: 3) { controller.canSetLocation }
+            controller.setLocation(try MockLocationCoordinate(latitude: 13.7563, longitude: 100.5018))
+            waitUntil(timeout: 3) { controller.isWiFiSessionActive }
+            expect(controller.isWiFiSessionActive, "loss fixture must first establish an acknowledged Network session")
+            state.snapshot = DeviceSnapshot()
+            controller.refreshLocalState()
+            try Data().write(to: lossTrigger)
+            waitUntil(timeout: 3) { controller.reviewRequired && !controller.isBusy }
+            expect(controller.reviewRequired && !controller.isAssumedActive, "transport loss must promptly downgrade assumed activity to review")
+            expect(controller.blocksDeviceMutation && stored.value?.state == .uncertain, "transport loss must preserve the durable reset obligation")
+            expect(!controller.canSetLocation && !controller.canReturnToRealLocation, "a lost Wi-Fi session must neither Set nor silently reconnect without USB identity recovery")
+
+            state.snapshot = originalSnapshot
+            state.snapshot.ecid = "0xABCDEF1234"
+            state.snapshot.udid = "00008030-00ABCDEF12345678"
+            controller.refreshLocalState()
+            expect(!controller.canReturnToRealLocation, "a different USB iPhone must never satisfy a Wi-Fi recovery journal")
+
+            state.snapshot = originalSnapshot
+            state.snapshot.locationID = 2_097_152
+            controller.refreshLocalState()
+            // The structured loss event precedes process termination. Recovery
+            // must wait until the old channel is fully gone before opening USB.
+            waitUntil(timeout: 3) { controller.canReturnToRealLocation }
+            expect(controller.canReturnToRealLocation, "the same stable iPhone on a new USB port must permit guarded Wi-Fi recovery Clear")
+            let preflightBeforeRecovery = state.preflightCount
+            controller.returnToRealLocation()
+            waitUntil(timeout: 3) { !controller.blocksDeviceMutation }
+            expect(state.preflightCount == preflightBeforeRecovery + 2 && state.reconnectConfirmationCount == 1, "lost Wi-Fi recovery must use two fresh USB Trust checks and explicit stable-identity confirmation")
+            expect(stored.value == nil && !controller.reviewRequired, "acknowledged USB recovery Clear must resolve the Wi-Fi journal")
+            let log = try String(contentsOf: fixture.requestLog, encoding: .utf8)
+            let clearLines = log.split(separator: "\n").filter { $0.hasPrefix("clear|") }
+            expect(clearLines.count == 1 && !clearLines[0].contains("\"transport\":\"wifi\""), "lost Wi-Fi recovery must explicitly use the freshly attested USB target without network retry")
+        } catch {
+            expect(false, "Wi-Fi connection-loss fixture failed")
+        }
     }
 
     private static func testGenericControllerAttestation(expect: (Bool, String) -> Void) {

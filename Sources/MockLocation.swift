@@ -345,7 +345,7 @@ enum MockLocationReadinessIssue: String, Equatable {
         case .developerDiskImageRequired:
             return "Developer services are not prepared for this iOS build. Mount the matching Developer Disk Image explicitly, then check again."
         case .tunnelUnavailable:
-            return "The iOS 17+ developer tunnel could not be established over this USB connection."
+            return "The iOS 17+ developer tunnel could not be established over the selected connection."
         case .developerServiceUnavailable:
             return "The private developer location service is unavailable for this device session."
         case .permissionDenied:
@@ -427,6 +427,14 @@ enum MockLocationSetMode: String, Codable, Equatable {
     case persistentUntilClearOrReboot
 }
 
+enum MockLocationTransport: String, Codable, CaseIterable, Identifiable {
+    case usb
+    case wifi
+
+    var id: String { rawValue }
+    var displayName: String { self == .usb ? "USB" : "Wi-Fi" }
+}
+
 // MARK: - Crash-safe journal
 
 enum MockLocationJournalError: LocalizedError, Equatable {
@@ -454,13 +462,14 @@ struct MockLocationJournalRecord: Codable, Equatable {
         case uncertain
     }
 
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     let schema: Int
     let state: State
     let targetFingerprint: String
     let stableTargetFingerprint: String?
     let setMode: MockLocationSetMode
+    let transport: MockLocationTransport
     let requestDispatched: Bool
     let createdAt: Date
     let updatedAt: Date
@@ -470,6 +479,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         pin: MockLocationTargetPin,
         stablePin: MockLocationTargetPin? = nil,
         setMode: MockLocationSetMode = .liveSession,
+        transport: MockLocationTransport = .usb,
         requestDispatched: Bool,
         createdAt: Date,
         updatedAt: Date
@@ -479,6 +489,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         targetFingerprint = pin.fingerprint
         stableTargetFingerprint = stablePin?.fingerprint
         self.setMode = setMode
+        self.transport = transport
         self.requestDispatched = requestDispatched
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -494,10 +505,14 @@ struct MockLocationJournalRecord: Codable, Equatable {
     }
 
     func validated() throws -> Self {
-        guard schema == 1 || schema == Self.schemaVersion else {
+        guard (1...Self.schemaVersion).contains(schema) else {
             throw MockLocationJournalError.unsupportedSchema
         }
         _ = try MockLocationTargetPin(fingerprint: targetFingerprint)
+        guard (schema >= 3 || transport == .usb),
+              (transport != .wifi || setMode == .liveSession) else {
+            throw MockLocationJournalError.invalidRecord
+        }
         if schema == 1 {
             guard stableTargetFingerprint == nil,
                   setMode == .liveSession else {
@@ -543,6 +558,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         case targetFingerprint
         case stableTargetFingerprint
         case setMode
+        case transport
         case requestDispatched
         case createdAt
         case updatedAt
@@ -559,6 +575,8 @@ struct MockLocationJournalRecord: Codable, Equatable {
         )
         setMode = try container.decodeIfPresent(MockLocationSetMode.self, forKey: .setMode)
             ?? .liveSession
+        transport = try container.decodeIfPresent(MockLocationTransport.self, forKey: .transport)
+            ?? .usb
         requestDispatched = try container.decode(Bool.self, forKey: .requestDispatched)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -801,6 +819,7 @@ enum MockLocationBackendOperation: String, Equatable {
     case setPersistent = "set-persistent"
     case clear
     case revealDeveloperMode = "reveal-developer-mode"
+    case enableWiFi = "enable-wifi"
 }
 
 struct MockLocationBackendCommand: Equatable {
@@ -813,17 +832,19 @@ struct MockLocationBackendCommand: Equatable {
 enum MockLocationCommandBuilder {
     static func probe(
         backend: MockLocationBackendDescriptor,
-        target: MockLocationExactTarget
+        target: MockLocationExactTarget,
+        transport: MockLocationTransport = .usb
     ) -> MockLocationBackendCommand {
-        command(backend: backend, operation: .probe, target: target, coordinate: nil)
+        command(backend: backend, operation: .probe, target: target, coordinate: nil, transport: transport)
     }
 
     static func set(
         backend: MockLocationBackendDescriptor,
         target: MockLocationExactTarget,
-        coordinate: MockLocationCoordinate
+        coordinate: MockLocationCoordinate,
+        transport: MockLocationTransport = .usb
     ) -> MockLocationBackendCommand {
-        command(backend: backend, operation: .set, target: target, coordinate: coordinate)
+        command(backend: backend, operation: .set, target: target, coordinate: coordinate, transport: transport)
     }
 
     static func setPersistent(
@@ -841,9 +862,17 @@ enum MockLocationCommandBuilder {
 
     static func clear(
         backend: MockLocationBackendDescriptor,
+        target: MockLocationExactTarget,
+        transport: MockLocationTransport = .usb
+    ) -> MockLocationBackendCommand {
+        command(backend: backend, operation: .clear, target: target, coordinate: nil, transport: transport)
+    }
+
+    static func enableWiFi(
+        backend: MockLocationBackendDescriptor,
         target: MockLocationExactTarget
     ) -> MockLocationBackendCommand {
-        command(backend: backend, operation: .clear, target: target, coordinate: nil)
+        command(backend: backend, operation: .enableWiFi, target: target, coordinate: nil)
     }
 
     static func revealDeveloperMode(
@@ -862,15 +891,17 @@ enum MockLocationCommandBuilder {
         backend: MockLocationBackendDescriptor,
         operation: MockLocationBackendOperation,
         target: MockLocationExactTarget,
-        coordinate: MockLocationCoordinate?
+        coordinate: MockLocationCoordinate?,
+        transport: MockLocationTransport = .usb
     ) -> MockLocationBackendCommand {
         var request: [String: Any] = [
             "udid": target.udid,
             "expectedProductType": target.productType
         ]
-        if operation == .revealDeveloperMode {
+        if operation == .revealDeveloperMode || operation == .enableWiFi || transport == .wifi {
             request["expectedECID"] = target.ecid
         }
+        if transport == .wifi { request["transport"] = transport.rawValue }
         if let coordinate {
             request["latitude"] = coordinate.latitude
             request["longitude"] = coordinate.longitude
@@ -904,6 +935,7 @@ enum MockLocationBackendErrorCode: String, Equatable {
     case developerServiceUnavailable = "developer_service_unavailable"
     case permissionDenied = "permission_denied"
     case timeout
+    case connectionLost = "connection_lost"
     case internalFailure = "internal_failure"
 
     var readinessIssue: MockLocationReadinessIssue {
@@ -914,7 +946,7 @@ enum MockLocationBackendErrorCode: String, Equatable {
         case .unlockRequired: return .unlockRequired
         case .developerModeRevealFailed: return .developerModeRevealFailed
         case .developerDiskImageRequired: return .developerDiskImageRequired
-        case .tunnelUnavailable: return .tunnelUnavailable
+        case .tunnelUnavailable, .connectionLost: return .tunnelUnavailable
         case .developerServiceUnavailable: return .developerServiceUnavailable
         case .permissionDenied: return .permissionDenied
         case .timeout: return .probeTimedOut
@@ -933,6 +965,7 @@ enum MockLocationBackendEventKind: Equatable {
     case clearSent
     case developerModeOptionRequested
     case developerModeAlreadyEnabled
+    case wifiEnabled
     case error
 }
 
@@ -1101,6 +1134,17 @@ enum MockLocationBackendEventParser {
             }
             return .success(MockLocationBackendEvent(
                 kind: .developerModeAlreadyEnabled,
+                protocolVersion: nil,
+                backendVersion: nil,
+                productType: nil,
+                errorCode: nil
+            ))
+        case "wifienabled":
+            guard dictionary["status"] as? String == "ok" else {
+                return .failure(.invalidEvent)
+            }
+            return .success(MockLocationBackendEvent(
+                kind: .wifiEnabled,
                 protocolVersion: nil,
                 backendVersion: nil,
                 productType: nil,
@@ -1562,6 +1606,7 @@ final class MockLocationController: ObservableObject {
             MockLocationExactTarget,
             MockLocationTargetPin
         ) -> Bool
+        var confirmEnableWiFi: (MockLocationExactTarget) -> Bool = { _ in false }
     }
 
     private struct ActiveRun {
@@ -1569,6 +1614,7 @@ final class MockLocationController: ObservableObject {
         let operation: MockLocationBackendOperation
         let target: MockLocationExactTarget
         let createdAt: Date
+        var transport: MockLocationTransport = .usb
         var sawHello = false
         var backendVersion: String?
         var attested = false
@@ -1580,6 +1626,7 @@ final class MockLocationController: ObservableObject {
         var clearSent = false
         var developerModeOptionRequested = false
         var developerModeAlreadyEnabled = false
+        var wifiEnabled = false
         var protocolOrderInvalid = false
         var backendError: MockLocationBackendErrorCode?
     }
@@ -1593,6 +1640,7 @@ final class MockLocationController: ObservableObject {
     @Published private(set) var blocksDeviceMutation = false
     @Published private(set) var isAssumedActive = false
     @Published private(set) var reviewRequired = false
+    @Published private(set) var selectedTransport: MockLocationTransport = .usb
 
     private let resolveBackend: () -> Result<MockLocationBackendDescriptor, MockLocationBackendResolutionError>
     private let journal: MockLocationJournalClient
@@ -1603,6 +1651,7 @@ final class MockLocationController: ObservableObject {
     private var journalRecord: MockLocationJournalRecord?
     private var activeRun: ActiveRun?
     private var preflightID: UUID?
+    private var readinessTransport: MockLocationTransport = .usb
 
     init(
         resolveBackend: @escaping () -> Result<MockLocationBackendDescriptor, MockLocationBackendResolutionError>,
@@ -1620,6 +1669,7 @@ final class MockLocationController: ObservableObject {
         do {
             if let record = try journal.load() {
                 journalRecord = record
+                selectedTransport = record.transport
                 if record.state == .assumedPersistent,
                    record.setMode == .persistentUntilClearOrReboot,
                    let pin = record.pin {
@@ -1689,6 +1739,7 @@ final class MockLocationController: ObservableObject {
     }
 
     var connectedTargetToken: String? {
+        if let run = liveWiFiRun { return run.target.pin.displayToken }
         guard let snapshot = host?.currentSnapshot() else { return nil }
         return MockLocationExactTarget.pin(for: snapshot)?.displayToken
     }
@@ -1728,6 +1779,44 @@ final class MockLocationController: ObservableObject {
         return true
     }
 
+    var canSelectTransport: Bool {
+        !isBusy && !isAssumedActive && !reviewRequired &&
+        activeRun == nil && !processCoordinator.hasActiveProcess
+    }
+
+    func selectTransport(_ transport: MockLocationTransport) {
+        guard canSelectTransport, transport != selectedTransport else { return }
+        selectedTransport = transport
+        readiness = .notChecked
+        lastError = nil
+        statusText = "Check \(transport.displayName) readiness"
+        detailText = transport == .wifi
+            ? "Connect and Trust the iPhone over USB first. Enable Wi-Fi, then check the separate Wi-Fi developer connection before setting a location."
+            : "Connect the iPhone over USB and check the developer session before setting a location."
+        refreshLocalState()
+    }
+
+    var canEnableWiFi: Bool {
+        selectedTransport == .wifi && canCheckReadiness &&
+        activeRun == nil && !processCoordinator.hasActiveProcess
+    }
+
+    // This is the same authenticated Network channel that accepted Set. USB
+    // discovery is deliberately irrelevant here; Clear must never retarget a
+    // newly attached phone or require the cable it is designed to replace.
+    private var liveWiFiRun: ActiveRun? {
+        guard let run = activeRun,
+              run.operation == .set, run.transport == .wifi,
+              run.attested, run.ready, run.activeAcknowledged,
+              !run.clearRequested, !run.clearSent, !run.protocolOrderInvalid,
+              run.backendError == nil,
+              processCoordinator.activeOperation == .set else { return nil }
+        return run
+    }
+
+    var isWiFiSessionActive: Bool { liveWiFiRun != nil }
+    var liveWiFiProductType: String? { liveWiFiRun?.target.productType }
+
     var shouldOfferDeveloperModeOptionRequest: Bool {
         guard let host,
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()) else {
@@ -1760,6 +1849,7 @@ final class MockLocationController: ObservableObject {
         guard !isBusy, !isAssumedActive, !reviewRequired,
               let host, host.hostGate().permitsLocationWork,
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
+              readinessTransport == selectedTransport,
               readiness.isReady(for: target.pin) else { return false }
         switch simulationKnowledge {
         case .notRequested, .resetRequestSent:
@@ -1775,7 +1865,9 @@ final class MockLocationController: ObservableObject {
     }
 
     var canReturnToRealLocation: Bool {
-        guard !isBusy, let host, host.hostGate().permitsLocationWork,
+        guard !isBusy, let host, host.hostGate().permitsLocationWork else { return false }
+        if liveWiFiRun != nil { return true }
+        guard
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
               let match = clearTargetMatch(for: target) else { return false }
         switch simulationKnowledge {
@@ -1784,8 +1876,11 @@ final class MockLocationController: ObservableObject {
         case .assumedActive, .assumedPersistent, .notRequested, .resetRequestSent, .uncertain:
             break
         }
-        if case .exact = match,
-           processCoordinator.activeOperation == .set {
+        if processCoordinator.hasActiveProcess {
+            guard case .exact = match, let run = activeRun,
+                  run.operation == .set, run.target.pin == target.pin,
+                  run.backendError == nil, !run.protocolOrderInvalid,
+                  processCoordinator.activeOperation == .set else { return false }
             return true
         }
         switch match {
@@ -1798,6 +1893,12 @@ final class MockLocationController: ObservableObject {
     func refreshLocalState() {
         guard let host else { return }
         let snapshot = host.currentSnapshot()
+
+        if liveWiFiRun != nil {
+            // USB removal or another USB device cannot change the target of an
+            // established Network session. Its backend watches tunnel closure.
+            return
+        }
 
         if isAssumedPersistent {
             if let expectedStablePin = journalRecord?.stablePin,
@@ -1943,14 +2044,52 @@ final class MockLocationController: ObservableObject {
         }
     }
 
+    func enableWiFiConnection() {
+        guard canEnableWiFi, let host,
+              let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
+              case .success(let backend) = resolveBackend() else { return }
+        lastError = nil
+        isBusy = true
+        readiness = .notChecked
+        statusText = "Verifying USB Trust for Wi-Fi setup…"
+        detailText = "The exact USB iPhone is verified before enabling Apple's Wi-Fi connection setting."
+        publishDerivedState()
+        requestPreflight(expected: target) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let freshTarget):
+                guard host.confirmEnableWiFi(freshTarget) else {
+                    self.isBusy = false
+                    self.statusText = "Wi-Fi setup was cancelled"
+                    self.detailText = "No Wi-Fi setting request was sent."
+                    self.publishDerivedState()
+                    return
+                }
+                self.requestPreflight(expected: freshTarget) { [weak self] confirmed in
+                    guard let self else { return }
+                    switch confirmed {
+                    case .success(let confirmedTarget):
+                        self.startWiFiSetup(backend: backend, target: confirmedTarget)
+                    case .failure(let failure):
+                        self.finishPreflightFailure(failure, mutatingRequestMayHaveStarted: false)
+                    }
+                }
+            case .failure(let failure):
+                self.finishPreflightFailure(failure, mutatingRequestMayHaveStarted: false)
+            }
+        }
+    }
+
     func setLocation(
         _ coordinate: MockLocationCoordinate,
         mode: MockLocationSetMode = .liveSession
     ) {
         lastError = nil
         guard let host, !isBusy, !isAssumedActive, !reviewRequired,
+              (selectedTransport != .wifi || mode == .liveSession),
               host.hostGate().permitsLocationWork,
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
+              readinessTransport == selectedTransport,
               readiness.isReady(for: target.pin),
               case .success(let backend) = resolveBackend() else { return }
 
@@ -2080,6 +2219,12 @@ final class MockLocationController: ObservableObject {
 
     func returnToRealLocation() {
         lastError = nil
+        if canReturnToRealLocation, let run = liveWiFiRun {
+            isBusy = true
+            setSimulation(.clearing(pin: run.target.pin))
+            beginClear(target: run.target)
+            return
+        }
         guard canReturnToRealLocation,
               let host,
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
@@ -2170,7 +2315,7 @@ final class MockLocationController: ObservableObject {
 
     private func clearTargetMatch(for target: MockLocationExactTarget) -> ClearTargetMatch? {
         if let pin = simulationKnowledge.pin, pin == target.pin { return .exact }
-        if journalRecord?.setMode == .persistentUntilClearOrReboot,
+        if (journalRecord?.setMode == .persistentUntilClearOrReboot || journalRecord?.transport == .wifi),
            journalRecord?.stablePin == target.stablePin,
            let originalConnectionPin = journalRecord?.pin {
             return .reconnected(originalConnectionPin: originalConnectionPin)
@@ -2256,7 +2401,8 @@ final class MockLocationController: ObservableObject {
         backend: MockLocationBackendDescriptor,
         target: MockLocationExactTarget
     ) {
-        let command = MockLocationCommandBuilder.probe(backend: backend, target: target)
+        let transport = selectedTransport
+        let command = MockLocationCommandBuilder.probe(backend: backend, target: target, transport: transport)
         let createdAt = now()
         let result = processCoordinator.start(
             command,
@@ -2274,11 +2420,40 @@ final class MockLocationController: ObservableObject {
                 id: identifier,
                 operation: .probe,
                 target: target,
-                createdAt: createdAt
+                createdAt: createdAt,
+                transport: transport
             )
         case .failure:
             failReadiness(.backendFailure)
             isBusy = false
+            publishDerivedState()
+        }
+    }
+
+    private func startWiFiSetup(
+        backend: MockLocationBackendDescriptor,
+        target: MockLocationExactTarget
+    ) {
+        statusText = "Enabling the iPhone's Wi-Fi connection…"
+        detailText = "One exact-target USB request enables Apple's Wi-Fi connection setting. A separate Network probe must still pass."
+        let result = processCoordinator.start(
+            MockLocationCommandBuilder.enableWiFi(backend: backend, target: target),
+            handshakeTimeout: 120,
+            onEvent: { [weak self] identifier, event in
+                self?.handleBackendEvent(identifier: identifier, event: event)
+            },
+            completion: { [weak self] identifier, completion in
+                self?.handleProcessCompletion(identifier: identifier, completion: completion)
+            }
+        )
+        switch result {
+        case .success(let identifier):
+            activeRun = ActiveRun(id: identifier, operation: .enableWiFi, target: target, createdAt: now())
+        case .failure:
+            isBusy = false
+            statusText = "Wi-Fi setup could not start"
+            detailText = "The bundled backend could not be launched. Connect the same iPhone over USB and try again."
+            lastError = MockLocationReadinessIssue.backendFailure.userDescription
             publishDerivedState()
         }
     }
@@ -2328,11 +2503,13 @@ final class MockLocationController: ObservableObject {
         mode: MockLocationSetMode
     ) {
         let createdAt = now()
+        let transport = selectedTransport
         let pending = MockLocationJournalRecord(
             state: .pendingSet,
             pin: target.pin,
             stablePin: target.stablePin,
             setMode: mode,
+            transport: transport,
             requestDispatched: false,
             createdAt: createdAt,
             updatedAt: createdAt
@@ -2359,7 +2536,8 @@ final class MockLocationController: ObservableObject {
             command = MockLocationCommandBuilder.set(
                 backend: backend,
                 target: target,
-                coordinate: coordinate
+                coordinate: coordinate,
+                transport: transport
             )
         case .persistentUntilClearOrReboot:
             command = MockLocationCommandBuilder.setPersistent(
@@ -2384,7 +2562,8 @@ final class MockLocationController: ObservableObject {
                 id: identifier,
                 operation: command.operation,
                 target: target,
-                createdAt: createdAt
+                createdAt: createdAt,
+                transport: transport
             )
         case .failure(let failure):
             isBusy = false
@@ -2409,6 +2588,7 @@ final class MockLocationController: ObservableObject {
             pin: target.pin,
             stablePin: target.stablePin,
             setMode: journalRecord?.setMode ?? .liveSession,
+            transport: journalRecord?.transport ?? .usb,
             requestDispatched: false,
             createdAt: createdAt,
             updatedAt: now()
@@ -2484,6 +2664,18 @@ final class MockLocationController: ObservableObject {
         switch event.kind {
         case .hello:
             guard !run.sawHello else { run.protocolOrderInvalid = true; break }
+            if run.transport == .wifi || run.operation == .enableWiFi {
+                let components = (event.backendVersion ?? "").split(separator: ".", omittingEmptySubsequences: false)
+                let version = components.compactMap { component -> Int? in
+                    guard !component.isEmpty, component.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+                    return Int(component)
+                }
+                guard components.count == 3, version.count == 3,
+                      version.lexicographicallyPrecedes([1, 3, 0]) == false else {
+                    run.protocolOrderInvalid = true
+                    break
+                }
+            }
             run.sawHello = true
             run.backendVersion = event.backendVersion
         case .attested:
@@ -2494,7 +2686,7 @@ final class MockLocationController: ObservableObject {
             }
             run.attested = true
         case .ready:
-            guard run.operation != .revealDeveloperMode,
+            guard run.operation != .revealDeveloperMode, run.operation != .enableWiFi,
                   run.attested, !run.ready else {
                 run.protocolOrderInvalid = true
                 break
@@ -2505,7 +2697,13 @@ final class MockLocationController: ObservableObject {
                 run.protocolOrderInvalid = true
                 break
             }
-            if run.operation == .revealDeveloperMode {
+            if run.operation == .enableWiFi {
+                guard !run.ready, !run.requestDispatched, !run.wifiEnabled else {
+                    run.protocolOrderInvalid = true
+                    break
+                }
+                run.requestDispatched = true
+            } else if run.operation == .revealDeveloperMode {
                 guard !run.ready,
                       !run.requestDispatched,
                       !run.developerModeOptionRequested,
@@ -2531,6 +2729,7 @@ final class MockLocationController: ObservableObject {
                     pin: run.target.pin,
                     stablePin: run.target.stablePin,
                     setMode: journalRecord?.setMode ?? .liveSession,
+                    transport: journalRecord?.transport ?? run.transport,
                     requestDispatched: true,
                     createdAt: run.createdAt,
                     updatedAt: now()
@@ -2559,6 +2758,7 @@ final class MockLocationController: ObservableObject {
                     setMode: run.operation == .setPersistent
                         ? .persistentUntilClearOrReboot
                         : .liveSession,
+                    transport: run.transport,
                     requestDispatched: true,
                     createdAt: run.createdAt,
                     updatedAt: now()
@@ -2600,6 +2800,7 @@ final class MockLocationController: ObservableObject {
                 pin: run.target.pin,
                 stablePin: run.target.stablePin,
                 setMode: setMode,
+                transport: run.transport,
                 requestDispatched: true,
                 createdAt: run.createdAt,
                 updatedAt: now()
@@ -2611,8 +2812,12 @@ final class MockLocationController: ObservableObject {
                     processCoordinator.acknowledgeActive(for: identifier)
                     isBusy = false
                     setSimulation(.assumedActive(pin: run.target.pin, requestedAt: now()))
-                    statusText = "Mock Location is assumed active"
-                    detailText = "The backend acknowledged the live simulation session. iOS provides no getter to confirm the simulated coordinate."
+                    statusText = run.transport == .wifi
+                        ? "Wi-Fi Mock Location session is active"
+                        : "Mock Location is assumed active"
+                    detailText = run.transport == .wifi
+                        ? "The exact iPhone acknowledged Set over Wi-Fi. You may unplug USB now. Keep YIOS-KIT and this Mac awake on the same network. iOS provides no getter to verify the coordinate."
+                        : "The backend acknowledged the live simulation session. iOS provides no getter to confirm the simulated coordinate."
                 } else {
                     processCoordinator.beginPersistentTeardownDeadline(
                         for: identifier,
@@ -2677,8 +2882,26 @@ final class MockLocationController: ObservableObject {
             run.developerModeAlreadyEnabled = true
             statusText = "Developer Mode was already enabled"
             detailText = "Waiting for a clean backend exit before returning to the readiness check."
+        case .wifiEnabled:
+            guard run.operation == .enableWiFi,
+                  run.attested, run.requestDispatched, !run.ready,
+                  !run.wifiEnabled, !run.protocolOrderInvalid,
+                  run.backendError == nil else {
+                run.protocolOrderInvalid = true
+                break
+            }
+            run.wifiEnabled = true
         case .error:
             run.backendError = event.errorCode
+            if event.errorCode == .connectionLost, run.requestDispatched,
+               run.operation == .set, !run.clearSent {
+                isBusy = false
+                transitionToUncertain(pin: run.target.pin, reason: .backendExited)
+                statusText = "Mock Location connection was lost"
+                detailText = "The developer tunnel closed. Reconnect the same iPhone over USB and send Return to Real Location before starting another session."
+                lastError = "The live connection ended; the phone's current simulated location cannot be confirmed."
+                processCoordinator.beginClearDeadline(for: identifier)
+            }
         }
         activeRun = run
     }
@@ -2701,12 +2924,32 @@ final class MockLocationController: ObservableObject {
                     checkedAt: now(),
                     backendVersion: run.backendVersion
                 )
-                statusText = "Mock Location is ready"
-                detailText = "The exact target, developer service, and USB tunnel passed the read-only probe. No simulated coordinate has been sent."
+                readinessTransport = run.transport
+                statusText = "\(run.transport.displayName) Mock Location is ready"
+                detailText = "The exact target, developer service, and \(run.transport.displayName) tunnel passed the read-only probe. Keep USB connected until Set is acknowledged. No simulated coordinate has been sent."
                 lastError = nil
             } else {
                 let issue = processIssue(run: run, completion: completion)
                 failReadiness(issue)
+                if run.transport == .wifi,
+                   (run.backendError == .targetNotFound || issue == .tunnelUnavailable || issue == .probeTimedOut) {
+                    statusText = "The iPhone's Wi-Fi connection is not ready"
+                    detailText = "Keep USB attached, unlock and Trust the iPhone, enable Wi-Fi Connection, and put both devices on the same network. Allow local-network access if macOS asks. Apple's Network discovery must find this exact iPhone before Set can start."
+                    lastError = "No exact-target Wi-Fi developer connection was established."
+                }
+            }
+        case .enableWiFi:
+            readiness = .notChecked
+            if completion.completedCleanly, run.sawHello, run.attested,
+               run.requestDispatched, run.wifiEnabled, !run.ready,
+               !run.protocolOrderInvalid, run.backendError == nil {
+                statusText = "Wi-Fi connection setting is enabled"
+                detailText = "Keep USB attached and choose Check Readiness. The iPhone and Mac must share a network; enabling the setting alone does not prove a Network connection is available."
+                lastError = nil
+            } else {
+                statusText = "Wi-Fi setup was not confirmed"
+                detailText = "Reconnect and unlock the same iPhone over USB, verify Trust, then try again. No location request was sent."
+                lastError = processIssue(run: run, completion: completion).userDescription
             }
         case .revealDeveloperMode:
             let optionExpected = run.requestDispatched &&
@@ -2756,6 +2999,10 @@ final class MockLocationController: ObservableObject {
             lastError = run.requestDispatched
                 ? "The live backend ended before a reset request was recorded. Reconnect the same target and choose Return to Real Location."
                 : "The backend ended after launch; a location request cannot be ruled out. Review and reset the same target."
+            if run.backendError == .connectionLost {
+                statusText = "Mock Location connection was lost"
+                detailText = "Reconnect the same iPhone over USB and choose Return to Real Location. The phone's current location is unknown; starting another simulation remains blocked."
+            }
         case .setPersistent:
             if completion.completedCleanly,
                run.sawHello, run.attested, run.ready,
@@ -2896,6 +3143,7 @@ final class MockLocationController: ObservableObject {
                 pin: pin,
                 stablePin: stablePin,
                 setMode: journalRecord?.setMode ?? .liveSession,
+                transport: journalRecord?.transport ?? .usb,
                 requestDispatched: true,
                 createdAt: createdAt,
                 updatedAt: now()
