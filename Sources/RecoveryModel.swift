@@ -539,10 +539,13 @@ final class RecoveryModel: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         let isPersistent = mode == .persistentUntilClearOrReboot
-        alert.messageText = isPersistent
+        let isNative = mockLocationController.selectedEngine == .appleNative
+        alert.messageText = isNative ? "Set an Apple native persistent test location?" : isPersistent
             ? "Set an experimental persistent test location?"
             : "Set a test location on this exact iPhone?"
-        let persistenceWarning = isPersistent
+        let persistenceWarning = isNative
+            ? "\n\nApple's native location command can leave an override on the iPhone after the command exits. Persistence after removing USB and Wi-Fi must be checked on this iPhone. YIOS-KIT records the native engine and keeps other device operations locked until a native Return to Real Location succeeds. Reconnect the same iPhone over USB to clear it."
+            : isPersistent
             ? "\n\nExperimental persistent mode waits for Apple's Set acknowledgement, then closes the developer session without sending Clear. The location may survive cable disconnect until Return to Real Location or an iPhone reboot, but iOS provides no getter and this behavior is not guaranteed on every build. YIOS-KIT keeps its safety lock until an exact-target Clear is recorded; even after reboot, reconnect and send Return to Real Location to clear that record."
             : ""
         let transport = mockLocationController.selectedTransport
@@ -551,7 +554,7 @@ final class RecoveryModel: ObservableObject {
             : (isPersistent ? "" : "\n\nUSB live session: keep the cable connected. Unplugging ends this session. To use Mock Location without the cable, cancel and select Wi-Fi, enable Wi-Fi Connection, and Check Readiness first.")
         alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\nConnection: \(transport.displayName)\nCoordinate: \(coordinate.latitudeArgument), \(coordinate.longitudeArgument)\n\nThis can affect Maps, navigation, location sharing, and every app that reads location until Return to Real Location is sent. Apps may detect that the location is simulated. iOS provides no getter to verify the active coordinate.\(persistenceWarning)\(connectionDetail)"
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: isPersistent ? "Set Experimental Persistent Location" : "Set Test Location")
+        alert.addButton(withTitle: isNative ? "Set Native Persistent Location" : isPersistent ? "Set Experimental Persistent Location" : "Set Test Location")
         return alert.runModal() == .alertSecondButtonReturn
     }
 

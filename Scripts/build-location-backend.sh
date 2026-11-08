@@ -196,7 +196,7 @@ for metadata_path in sorted(root.glob("*.dist-info/METADATA")):
     })
 
 manifest = {
-    "backendVersion": "1.3.1",
+    "backendVersion": "1.4.0",
     "protocolVersion": 1,
     "pythonRuntime": "/usr/bin/python3 3.9",
     "target": "arm64-apple-macos",

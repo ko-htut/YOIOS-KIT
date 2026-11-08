@@ -192,6 +192,37 @@ struct UIContractTestMain {
         }
         wifiRender.window.close()
 
+        let nativeController = mockLocationModel.mockLocationController
+        nativeController.selectEngine(.appleNative)
+        expect(nativeController.selectedEngine == .appleNative, .normal, "Native driver selection must be retained")
+        expect(nativeController.selectedTransport == .usb, .normal, "Native driver selection must force USB preflight")
+        nativeController.selectTransport(.wifi)
+        expect(nativeController.selectedTransport == .usb, .normal, "Native mode must reject DVT Wi-Fi transport selection")
+        expect(!nativeController.canEnableWiFi, .normal, "Native mode must not enable DVT Wi-Fi setup")
+        let nativeRender = render(
+            model: mockLocationModel,
+            colorScheme: .light,
+            initialDestination: .mockLocation,
+            disableAnimations: true
+        )
+        expect(nativeRender.bitmapWasCreated, .normal, "Native Mock Location setup did not render")
+        if usedNativeAccessibility {
+            let nodes = accessibilityTree(from: nativeRender.hostingView)
+            expect(node("mockLocationEnginePicker", in: nodes) != nil, .normal, "Native driver picker is missing")
+            expect(node("mockLocationNativeInstructions", in: nodes) != nil, .normal, "Native persistence instructions are missing")
+            for identifier in ["mockLocationTransportPicker", "mockLocationEnableWiFiButton", "mockLocationPersistentModeToggle"] {
+                expect(node(identifier, in: nodes) == nil, .normal, "Native mode must hide DVT control \(identifier)")
+            }
+            assertButton(
+                "mockLocationSetButton",
+                expectedLabel: "Set Native Persistent Location",
+                expectedEnabled: false,
+                nodes: nodes,
+                scenario: .normal
+            )
+        }
+        nativeRender.window.close()
+
         for persistent in [false, true] {
             let lockedModel = lockedMockLocationModel(persistent: persistent)
             assertMockLocationInterlock(lockedModel, persistent: persistent)
@@ -223,6 +254,32 @@ struct UIContractTestMain {
             }
             lockedRender.window.close()
         }
+
+        let nativeLockedModel = lockedMockLocationModel(persistent: true, engine: .appleNative)
+        let nativeLockedController = nativeLockedModel.mockLocationController
+        expect(nativeLockedController.isNativePersistent, .normal, "recovered native persistence must retain its driver")
+        expect(!nativeLockedController.canSelectEngine && !nativeLockedController.canSelectTransport, .normal, "native persistence must lock driver and transport selection")
+        nativeLockedController.selectEngine(.dvt)
+        expect(nativeLockedController.selectedEngine == .appleNative, .normal, "native reset obligation must reject a DVT driver switch")
+        assertMockLocationInterlock(nativeLockedModel, persistent: true)
+        let nativeLockedRender = render(
+            model: nativeLockedModel,
+            colorScheme: .dark,
+            initialDestination: .mockLocation,
+            disableAnimations: true
+        )
+        expect(nativeLockedRender.bitmapWasCreated, .normal, "recovered native persistence did not render")
+        if usedNativeAccessibility {
+            let nodes = accessibilityTree(from: nativeLockedRender.hostingView)
+            assertButton(
+                "mockLocationSetButton",
+                expectedLabel: "Set Native Persistent Location",
+                expectedEnabled: false,
+                nodes: nodes,
+                scenario: .normal
+            )
+        }
+        nativeLockedRender.window.close()
 
         let mismatchedRecordModel = mismatchedMockLocationRecordModel()
         expect(
@@ -536,7 +593,7 @@ struct UIContractTestMain {
         model.detailText = "This exact iPhone can be checked for Mock Location developer-service support."
     }
 
-    private static func lockedMockLocationModel(persistent: Bool) -> RecoveryModel {
+    private static func lockedMockLocationModel(persistent: Bool, engine: MockLocationEngine = .dvt) -> RecoveryModel {
         let snapshot = DeviceSnapshot(
             mode: .normal,
             deviceCount: 1,
@@ -564,6 +621,7 @@ struct UIContractTestMain {
             pin: target.pin,
             stablePin: target.stablePin,
             setMode: persistent ? .persistentUntilClearOrReboot : .liveSession,
+            engine: engine,
             requestDispatched: true,
             createdAt: timestamp,
             updatedAt: timestamp
@@ -1178,6 +1236,8 @@ struct UIContractTestMain {
             "mockLocationTargetPanel",
             "mockLocationReadinessPanel",
             "mockLocationCoordinatePanel",
+            "mockLocationEnginePicker",
+            "mockLocationNativeInstructions",
             "mockLocationPresetMenu",
             "mockLocationPersistentModeToggle",
             "mockLocationCheckReadinessButton",

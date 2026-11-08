@@ -309,6 +309,7 @@ struct MockLocationHostGate: Equatable {
 
 enum MockLocationReadinessIssue: String, Equatable {
     case helperUnavailable
+    case nativeToolUnavailable
     case hostBusy
     case targetNotEligible
     case targetChanged
@@ -328,6 +329,8 @@ enum MockLocationReadinessIssue: String, Equatable {
         switch self {
         case .helperUnavailable:
             return "The signed, app-private Mock Location backend is not bundled in this build."
+        case .nativeToolUnavailable:
+            return "Apple's native devicectl tool is missing or could not be verified. Install or repair the Apple developer tools before using Native mode."
         case .hostBusy:
             return "Another device workflow is active."
         case .targetNotEligible:
@@ -387,7 +390,7 @@ enum MockLocationUncertaintyReason: String, Codable, Equatable {
         case .recoveredAfterInterruption:
             return "The previous session ended before a reset could be recorded. Simulation state cannot be queried."
         case .journalUnreadable:
-            return "The crash-safety journal is unreadable, so the previous simulation state cannot be determined."
+            return "The crash-safety journal is unreadable. The previous target and location driver cannot be determined, so automatic reset is blocked until the saved record can be recovered."
         case .targetChanged:
             return "The pinned iPhone disconnected or changed while location simulation might be active."
         case .backendExited:
@@ -435,6 +438,14 @@ enum MockLocationTransport: String, Codable, CaseIterable, Identifiable {
     var displayName: String { self == .usb ? "USB" : "Wi-Fi" }
 }
 
+enum MockLocationEngine: String, Codable, CaseIterable, Identifiable {
+    case dvt
+    case appleNative
+
+    var id: String { rawValue }
+    var displayName: String { self == .dvt ? "DVT" : "Apple Native (Experimental)" }
+}
+
 // MARK: - Crash-safe journal
 
 enum MockLocationJournalError: LocalizedError, Equatable {
@@ -462,7 +473,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         case uncertain
     }
 
-    static let schemaVersion = 3
+    static let schemaVersion = 4
 
     let schema: Int
     let state: State
@@ -470,6 +481,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
     let stableTargetFingerprint: String?
     let setMode: MockLocationSetMode
     let transport: MockLocationTransport
+    let engine: MockLocationEngine
     let requestDispatched: Bool
     let createdAt: Date
     let updatedAt: Date
@@ -480,6 +492,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         stablePin: MockLocationTargetPin? = nil,
         setMode: MockLocationSetMode = .liveSession,
         transport: MockLocationTransport = .usb,
+        engine: MockLocationEngine = .dvt,
         requestDispatched: Bool,
         createdAt: Date,
         updatedAt: Date
@@ -490,6 +503,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         stableTargetFingerprint = stablePin?.fingerprint
         self.setMode = setMode
         self.transport = transport
+        self.engine = engine
         self.requestDispatched = requestDispatched
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -510,6 +524,8 @@ struct MockLocationJournalRecord: Codable, Equatable {
         }
         _ = try MockLocationTargetPin(fingerprint: targetFingerprint)
         guard (schema >= 3 || transport == .usb),
+              (schema >= 4 || engine == .dvt),
+              (engine != .appleNative || (setMode == .persistentUntilClearOrReboot && transport == .usb)),
               (transport != .wifi || setMode == .liveSession) else {
             throw MockLocationJournalError.invalidRecord
         }
@@ -559,6 +575,7 @@ struct MockLocationJournalRecord: Codable, Equatable {
         case stableTargetFingerprint
         case setMode
         case transport
+        case engine
         case requestDispatched
         case createdAt
         case updatedAt
@@ -577,6 +594,8 @@ struct MockLocationJournalRecord: Codable, Equatable {
             ?? .liveSession
         transport = try container.decodeIfPresent(MockLocationTransport.self, forKey: .transport)
             ?? .usb
+        engine = try container.decodeIfPresent(MockLocationEngine.self, forKey: .engine)
+            ?? .dvt
         requestDispatched = try container.decode(Bool.self, forKey: .requestDispatched)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -820,6 +839,12 @@ enum MockLocationBackendOperation: String, Equatable {
     case clear
     case revealDeveloperMode = "reveal-developer-mode"
     case enableWiFi = "enable-wifi"
+    case probeNative = "probe-native"
+    case setNativePersistent = "set-native-persistent"
+    case clearNative = "clear-native"
+
+    var isNative: Bool { self == .probeNative || self == .setNativePersistent || self == .clearNative }
+    var isPersistentSet: Bool { self == .setPersistent || self == .setNativePersistent }
 }
 
 struct MockLocationBackendCommand: Equatable {
@@ -830,6 +855,17 @@ struct MockLocationBackendCommand: Equatable {
 }
 
 enum MockLocationCommandBuilder {
+    static func probeNative(backend: MockLocationBackendDescriptor, target: MockLocationExactTarget) -> MockLocationBackendCommand {
+        command(backend: backend, operation: .probeNative, target: target, coordinate: nil)
+    }
+
+    static func setNativePersistent(backend: MockLocationBackendDescriptor, target: MockLocationExactTarget, coordinate: MockLocationCoordinate) -> MockLocationBackendCommand {
+        command(backend: backend, operation: .setNativePersistent, target: target, coordinate: coordinate)
+    }
+
+    static func clearNative(backend: MockLocationBackendDescriptor, target: MockLocationExactTarget) -> MockLocationBackendCommand {
+        command(backend: backend, operation: .clearNative, target: target, coordinate: nil)
+    }
     static func probe(
         backend: MockLocationBackendDescriptor,
         target: MockLocationExactTarget,
@@ -898,7 +934,8 @@ enum MockLocationCommandBuilder {
             "udid": target.udid,
             "expectedProductType": target.productType
         ]
-        if operation == .revealDeveloperMode || operation == .enableWiFi || transport == .wifi {
+        if operation == .revealDeveloperMode || operation == .enableWiFi ||
+            operation == .probeNative || operation == .setNativePersistent || operation == .clearNative || transport == .wifi {
             request["expectedECID"] = target.ecid
         }
         if transport == .wifi { request["transport"] = transport.rawValue }
@@ -936,6 +973,7 @@ enum MockLocationBackendErrorCode: String, Equatable {
     case permissionDenied = "permission_denied"
     case timeout
     case connectionLost = "connection_lost"
+    case nativeToolUnavailable = "native_tool_unavailable"
     case internalFailure = "internal_failure"
 
     var readinessIssue: MockLocationReadinessIssue {
@@ -952,6 +990,7 @@ enum MockLocationBackendErrorCode: String, Equatable {
         case .timeout: return .probeTimedOut
         case .invalidRequest: return .backendProtocolError
         case .internalFailure: return .backendFailure
+        case .nativeToolUnavailable: return .nativeToolUnavailable
         }
     }
 }
@@ -1501,7 +1540,7 @@ final class MockLocationProcessCoordinator {
     func beginPersistentTeardownDeadline(for sessionID: UUID, timeout: TimeInterval = 45) {
         guard let session = activeSession,
               session.id == sessionID,
-              session.operation == .setPersistent else { return }
+              session.operation.isPersistentSet else { return }
         session.deadline?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + max(1, timeout))
@@ -1615,6 +1654,7 @@ final class MockLocationController: ObservableObject {
         let target: MockLocationExactTarget
         let createdAt: Date
         var transport: MockLocationTransport = .usb
+        var engine: MockLocationEngine = .dvt
         var sawHello = false
         var backendVersion: String?
         var attested = false
@@ -1641,6 +1681,7 @@ final class MockLocationController: ObservableObject {
     @Published private(set) var isAssumedActive = false
     @Published private(set) var reviewRequired = false
     @Published private(set) var selectedTransport: MockLocationTransport = .usb
+    @Published private(set) var selectedEngine: MockLocationEngine = .dvt
 
     private let resolveBackend: () -> Result<MockLocationBackendDescriptor, MockLocationBackendResolutionError>
     private let journal: MockLocationJournalClient
@@ -1652,6 +1693,7 @@ final class MockLocationController: ObservableObject {
     private var activeRun: ActiveRun?
     private var preflightID: UUID?
     private var readinessTransport: MockLocationTransport = .usb
+    private var readinessEngine: MockLocationEngine = .dvt
 
     init(
         resolveBackend: @escaping () -> Result<MockLocationBackendDescriptor, MockLocationBackendResolutionError>,
@@ -1670,6 +1712,7 @@ final class MockLocationController: ObservableObject {
             if let record = try journal.load() {
                 journalRecord = record
                 selectedTransport = record.transport
+                selectedEngine = record.engine
                 if record.state == .assumedPersistent,
                    record.setMode == .persistentUntilClearOrReboot,
                    let pin = record.pin {
@@ -1677,8 +1720,10 @@ final class MockLocationController: ObservableObject {
                         pin: pin,
                         requestedAt: record.updatedAt
                     )
-                    statusText = "Persistent location may still be active"
-                    detailText = "A previous experimental Set completed cleanly without Clear. Reconnect the same stable iPhone and send Return to Real Location. Rebooting is expected to restore phone-side GPS, but the app safety record still requires this explicit reset."
+                    statusText = record.engine == .appleNative ? "Native persistent location may still be active" : "Persistent location may still be active"
+                    detailText = record.engine == .appleNative
+                        ? "A previous native Set completed without a recorded native Clear. Reconnect the same stable iPhone over USB and choose Return to Real Location. Persistence remains assumed until manually checked."
+                        : "A previous experimental Set completed cleanly without Clear. Reconnect the same stable iPhone and send Return to Real Location. Rebooting is expected to restore phone-side GPS, but the app safety record still requires this explicit reset."
                 } else {
                     simulationKnowledge = .uncertain(
                         pin: record.pin,
@@ -1784,8 +1829,23 @@ final class MockLocationController: ObservableObject {
         activeRun == nil && !processCoordinator.hasActiveProcess
     }
 
+    var canSelectEngine: Bool { canSelectTransport }
+
+    func selectEngine(_ engine: MockLocationEngine) {
+        guard canSelectEngine, selectedEngine != engine else { return }
+        selectedEngine = engine
+        if engine == .appleNative { selectedTransport = .usb }
+        readiness = .notChecked
+        lastError = nil
+        statusText = engine == .appleNative ? "Check Apple Native readiness" : "Check DVT readiness"
+        detailText = engine == .appleNative
+            ? "Keep USB connected for exact identity and Trust checks. Native persistence must be verified on this iPhone after removing both USB and Wi-Fi."
+            : "Choose USB or Wi-Fi and check the developer connection before starting."
+        refreshLocalState()
+    }
+
     func selectTransport(_ transport: MockLocationTransport) {
-        guard canSelectTransport, transport != selectedTransport else { return }
+        guard selectedEngine == .dvt, canSelectTransport, transport != selectedTransport else { return }
         selectedTransport = transport
         readiness = .notChecked
         lastError = nil
@@ -1797,7 +1857,7 @@ final class MockLocationController: ObservableObject {
     }
 
     var canEnableWiFi: Bool {
-        selectedTransport == .wifi && canCheckReadiness &&
+        selectedEngine == .dvt && selectedTransport == .wifi && canCheckReadiness &&
         activeRun == nil && !processCoordinator.hasActiveProcess
     }
 
@@ -1850,6 +1910,7 @@ final class MockLocationController: ObservableObject {
               let host, host.hostGate().permitsLocationWork,
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
               readinessTransport == selectedTransport,
+              readinessEngine == selectedEngine,
               readiness.isReady(for: target.pin) else { return false }
         switch simulationKnowledge {
         case .notRequested, .resetRequestSent:
@@ -1863,6 +1924,8 @@ final class MockLocationController: ObservableObject {
         if case .assumedPersistent = simulationKnowledge { return true }
         return false
     }
+
+    var isNativePersistent: Bool { isAssumedPersistent && journalRecord?.engine == .appleNative }
 
     var canReturnToRealLocation: Bool {
         guard !isBusy, let host, host.hostGate().permitsLocationWork else { return false }
@@ -2087,9 +2150,11 @@ final class MockLocationController: ObservableObject {
         lastError = nil
         guard let host, !isBusy, !isAssumedActive, !reviewRequired,
               (selectedTransport != .wifi || mode == .liveSession),
+              (selectedEngine != .appleNative || mode == .persistentUntilClearOrReboot),
               host.hostGate().permitsLocationWork,
               let target = try? MockLocationExactTarget(snapshot: host.currentSnapshot()),
               readinessTransport == selectedTransport,
+              readinessEngine == selectedEngine,
               readiness.isReady(for: target.pin),
               case .success(let backend) = resolveBackend() else { return }
 
@@ -2320,7 +2385,8 @@ final class MockLocationController: ObservableObject {
            let originalConnectionPin = journalRecord?.pin {
             return .reconnected(originalConnectionPin: originalConnectionPin)
         }
-        if case .uncertain(pin: nil, reason: _) = simulationKnowledge,
+        if case .uncertain(pin: nil, reason: let reason) = simulationKnowledge,
+           reason != .journalUnreadable,
            case .success = resolveBackend() {
             return .unpinned
         }
@@ -2402,7 +2468,10 @@ final class MockLocationController: ObservableObject {
         target: MockLocationExactTarget
     ) {
         let transport = selectedTransport
-        let command = MockLocationCommandBuilder.probe(backend: backend, target: target, transport: transport)
+        let engine = selectedEngine
+        let command = engine == .appleNative
+            ? MockLocationCommandBuilder.probeNative(backend: backend, target: target)
+            : MockLocationCommandBuilder.probe(backend: backend, target: target, transport: transport)
         let createdAt = now()
         let result = processCoordinator.start(
             command,
@@ -2418,10 +2487,11 @@ final class MockLocationController: ObservableObject {
         case .success(let identifier):
             activeRun = ActiveRun(
                 id: identifier,
-                operation: .probe,
+                operation: command.operation,
                 target: target,
                 createdAt: createdAt,
-                transport: transport
+                transport: transport,
+                engine: engine
             )
         case .failure:
             failReadiness(.backendFailure)
@@ -2504,12 +2574,14 @@ final class MockLocationController: ObservableObject {
     ) {
         let createdAt = now()
         let transport = selectedTransport
+        let engine = selectedEngine
         let pending = MockLocationJournalRecord(
             state: .pendingSet,
             pin: target.pin,
             stablePin: target.stablePin,
             setMode: mode,
             transport: transport,
+            engine: engine,
             requestDispatched: false,
             createdAt: createdAt,
             updatedAt: createdAt
@@ -2540,11 +2612,9 @@ final class MockLocationController: ObservableObject {
                 transport: transport
             )
         case .persistentUntilClearOrReboot:
-            command = MockLocationCommandBuilder.setPersistent(
-                backend: backend,
-                target: target,
-                coordinate: coordinate
-            )
+            command = engine == .appleNative
+                ? MockLocationCommandBuilder.setNativePersistent(backend: backend, target: target, coordinate: coordinate)
+                : MockLocationCommandBuilder.setPersistent(backend: backend, target: target, coordinate: coordinate)
         }
         let result = processCoordinator.start(
             command,
@@ -2563,7 +2633,8 @@ final class MockLocationController: ObservableObject {
                 operation: command.operation,
                 target: target,
                 createdAt: createdAt,
-                transport: transport
+                transport: transport,
+                engine: engine
             )
         case .failure(let failure):
             isBusy = false
@@ -2582,13 +2653,15 @@ final class MockLocationController: ObservableObject {
     }
 
     private func beginClear(target: MockLocationExactTarget) {
+        let engine = journalRecord?.engine ?? selectedEngine
         let createdAt = journalRecord?.createdAt ?? now()
         let pending = MockLocationJournalRecord(
             state: .pendingClear,
             pin: target.pin,
             stablePin: target.stablePin,
-            setMode: journalRecord?.setMode ?? .liveSession,
+            setMode: journalRecord?.setMode ?? (engine == .appleNative ? .persistentUntilClearOrReboot : .liveSession),
             transport: journalRecord?.transport ?? .usb,
+            engine: engine,
             requestDispatched: false,
             createdAt: createdAt,
             updatedAt: now()
@@ -2604,6 +2677,7 @@ final class MockLocationController: ObservableObject {
         }
 
         if var run = activeRun,
+           engine == .dvt,
            run.operation == .set,
            run.target.pin == target.pin,
            processCoordinator.activeOperation == .set {
@@ -2631,7 +2705,9 @@ final class MockLocationController: ObservableObject {
 
         statusText = "Sending reset request…"
         detailText = "A new exact-target developer session is being opened only to send the clear command."
-        let command = MockLocationCommandBuilder.clear(backend: backend, target: target)
+        let command = engine == .appleNative
+            ? MockLocationCommandBuilder.clearNative(backend: backend, target: target)
+            : MockLocationCommandBuilder.clear(backend: backend, target: target)
         let result = processCoordinator.start(
             command,
             handshakeTimeout: 180,
@@ -2646,9 +2722,10 @@ final class MockLocationController: ObservableObject {
         case .success(let identifier):
             var run = ActiveRun(
                 id: identifier,
-                operation: .clear,
+                operation: command.operation,
                 target: target,
-                createdAt: createdAt
+                createdAt: createdAt,
+                engine: engine
             )
             run.clearRequested = true
             activeRun = run
@@ -2664,14 +2741,15 @@ final class MockLocationController: ObservableObject {
         switch event.kind {
         case .hello:
             guard !run.sawHello else { run.protocolOrderInvalid = true; break }
-            if run.transport == .wifi || run.operation == .enableWiFi {
+            if run.transport == .wifi || run.operation == .enableWiFi || run.operation.isNative {
                 let components = (event.backendVersion ?? "").split(separator: ".", omittingEmptySubsequences: false)
                 let version = components.compactMap { component -> Int? in
                     guard !component.isEmpty, component.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
                     return Int(component)
                 }
+                let minimumVersion = run.operation.isNative ? [1, 4, 0] : [1, 3, 0]
                 guard components.count == 3, version.count == 3,
-                      version.lexicographicallyPrecedes([1, 3, 0]) == false else {
+                      version.lexicographicallyPrecedes(minimumVersion) == false else {
                     run.protocolOrderInvalid = true
                     break
                 }
@@ -2730,6 +2808,7 @@ final class MockLocationController: ObservableObject {
                     stablePin: run.target.stablePin,
                     setMode: journalRecord?.setMode ?? .liveSession,
                     transport: journalRecord?.transport ?? run.transport,
+                    engine: journalRecord?.engine ?? run.engine,
                     requestDispatched: true,
                     createdAt: run.createdAt,
                     updatedAt: now()
@@ -2744,7 +2823,7 @@ final class MockLocationController: ObservableObject {
                     setSimulation(.uncertain(pin: run.target.pin, reason: .journalWriteFailed))
                     lastError = "The reset request may have been dispatched, but its safety state could not be recorded."
                 }
-            } else if (run.operation == .set || run.operation == .setPersistent) &&
+            } else if (run.operation == .set || run.operation.isPersistentSet) &&
                         !run.requestDispatched {
                 guard run.ready else {
                     run.protocolOrderInvalid = true
@@ -2755,10 +2834,11 @@ final class MockLocationController: ObservableObject {
                     state: .uncertain,
                     pin: run.target.pin,
                     stablePin: run.target.stablePin,
-                    setMode: run.operation == .setPersistent
+                    setMode: run.operation.isPersistentSet
                         ? .persistentUntilClearOrReboot
                         : .liveSession,
                     transport: run.transport,
+                    engine: run.engine,
                     requestDispatched: true,
                     createdAt: run.createdAt,
                     updatedAt: now()
@@ -2777,7 +2857,7 @@ final class MockLocationController: ObservableObject {
                 run.protocolOrderInvalid = true
             }
         case .active:
-            guard (run.operation == .set || run.operation == .setPersistent),
+            guard (run.operation == .set || run.operation.isPersistentSet),
                   run.attested,
                   run.ready,
                   run.requestDispatched,
@@ -2785,22 +2865,23 @@ final class MockLocationController: ObservableObject {
                   !run.activeAcknowledged,
                   !run.protocolOrderInvalid,
                   run.backendError == nil,
-                  (run.operation == .setPersistent
+                  (run.operation.isPersistentSet
                     ? event.setMode == .persistentUntilClearOrReboot
                     : event.setMode == nil) else {
                 run.protocolOrderInvalid = true
                 break
             }
             run.activeAcknowledged = true
-            let setMode: MockLocationSetMode = run.operation == .setPersistent
+            let setMode: MockLocationSetMode = run.operation.isPersistentSet
                 ? .persistentUntilClearOrReboot
                 : .liveSession
             let active = MockLocationJournalRecord(
-                state: run.operation == .setPersistent ? .setAcknowledged : .assumedActive,
+                state: run.operation.isPersistentSet ? .setAcknowledged : .assumedActive,
                 pin: run.target.pin,
                 stablePin: run.target.stablePin,
                 setMode: setMode,
                 transport: run.transport,
+                engine: run.engine,
                 requestDispatched: true,
                 createdAt: run.createdAt,
                 updatedAt: now()
@@ -2823,7 +2904,9 @@ final class MockLocationController: ObservableObject {
                         for: identifier,
                         timeout: persistentTeardownTimeout
                     )
-                    statusText = "Persistent Set returned — closing developer session…"
+                    statusText = run.engine == .appleNative
+                        ? "Native Set returned — waiting for clean completion…"
+                        : "Persistent Set returned — closing developer session…"
                     detailText = "The app will claim only assumed persistence after the backend exits cleanly without sending Clear."
                 }
             } catch {
@@ -2832,7 +2915,7 @@ final class MockLocationController: ObservableObject {
                 lastError = "The location request may be active, but its crash-safety state could not be recorded. Choose Return to Real Location now."
             }
         case .clearSent:
-            guard (run.operation == .clear || run.operation == .set),
+            guard (run.operation == .clear || run.operation == .clearNative || run.operation == .set),
                   run.attested,
                   run.ready,
                   run.clearRequested,
@@ -2915,7 +2998,7 @@ final class MockLocationController: ObservableObject {
         isBusy = false
 
         switch run.operation {
-        case .probe:
+        case .probe, .probeNative:
             if completion.completedCleanly,
                run.sawHello, run.attested, run.ready,
                !run.protocolOrderInvalid, run.backendError == nil {
@@ -2925,8 +3008,13 @@ final class MockLocationController: ObservableObject {
                     backendVersion: run.backendVersion
                 )
                 readinessTransport = run.transport
-                statusText = "\(run.transport.displayName) Mock Location is ready"
-                detailText = "The exact target, developer service, and \(run.transport.displayName) tunnel passed the read-only probe. Keep USB connected until Set is acknowledged. No simulated coordinate has been sent."
+                readinessEngine = run.engine
+                statusText = run.engine == .appleNative
+                    ? "Apple Native persistent mode is ready"
+                    : "\(run.transport.displayName) Mock Location is ready"
+                detailText = run.engine == .appleNative
+                    ? "Fresh USB identity and Trust, the native device mapping, and Apple's location capability passed verification. Keep USB connected for Set. No simulated coordinate has been sent."
+                    : "The exact target, developer service, and \(run.transport.displayName) tunnel passed the read-only probe. Keep USB connected until Set is acknowledged. No simulated coordinate has been sent."
                 lastError = nil
             } else {
                 let issue = processIssue(run: run, completion: completion)
@@ -3003,18 +3091,20 @@ final class MockLocationController: ObservableObject {
                 statusText = "Mock Location connection was lost"
                 detailText = "Reconnect the same iPhone over USB and choose Return to Real Location. The phone's current location is unknown; starting another simulation remains blocked."
             }
-        case .setPersistent:
+        case .setPersistent, .setNativePersistent:
             if completion.completedCleanly,
                run.sawHello, run.attested, run.ready,
                run.requestDispatched, run.activeAcknowledged,
                !run.protocolOrderInvalid, run.backendError == nil,
                journalRecord?.state == .setAcknowledged,
-               journalRecord?.setMode == .persistentUntilClearOrReboot {
+               journalRecord?.setMode == .persistentUntilClearOrReboot,
+               journalRecord?.engine == run.engine {
                 let persistent = MockLocationJournalRecord(
                     state: .assumedPersistent,
                     pin: run.target.pin,
                     stablePin: run.target.stablePin,
                     setMode: .persistentUntilClearOrReboot,
+                    engine: run.engine,
                     requestDispatched: true,
                     createdAt: run.createdAt,
                     updatedAt: now()
@@ -3023,8 +3113,12 @@ final class MockLocationController: ObservableObject {
                     try journal.write(persistent)
                     journalRecord = persistent
                     setSimulation(.assumedPersistent(pin: run.target.pin, requestedAt: now()))
-                    statusText = "Persistent location is assumed active"
-                    detailText = "The Set call returned and the backend deliberately closed its developer session without Clear. Persistence is experimental and has no read-back getter. Use Return to Real Location; rebooting is expected to restore phone-side GPS but does not clear the app safety record."
+                    statusText = run.engine == .appleNative
+                        ? "Native persistent location is assumed active"
+                        : "Persistent location is assumed active"
+                    detailText = run.engine == .appleNative
+                        ? "Apple's native Set completed and its command exited cleanly. Verify persistence after removing both USB and Wi-Fi on the iPhone; there is no coordinate getter. Reconnect the same iPhone and use Return to Real Location for a native Clear."
+                        : "The Set call returned and the backend deliberately closed its developer session without Clear. Persistence is experimental and has no read-back getter. Use Return to Real Location; rebooting is expected to restore phone-side GPS but does not clear the app safety record."
                     lastError = nil
                 } catch {
                     transitionToUncertain(pin: run.target.pin, reason: .journalWriteFailed)
@@ -3039,7 +3133,7 @@ final class MockLocationController: ObservableObject {
                 )
                 lastError = "The experimental Set may have been sent, but clean developer-session teardown was not proven. Reconnect the same target and choose Return to Real Location."
             }
-        case .clear:
+        case .clear, .clearNative:
             if !run.clearSent {
                 transitionToUncertain(pin: run.target.pin, reason: .clearNotObserved)
                 lastError = "The backend ended without reporting that it sent the reset request. Reconnect the same target and try again."
@@ -3144,6 +3238,7 @@ final class MockLocationController: ObservableObject {
                 stablePin: stablePin,
                 setMode: journalRecord?.setMode ?? .liveSession,
                 transport: journalRecord?.transport ?? .usb,
+                engine: journalRecord?.engine ?? .dvt,
                 requestDispatched: true,
                 createdAt: createdAt,
                 updatedAt: now()

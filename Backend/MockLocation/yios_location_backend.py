@@ -3,8 +3,10 @@
 
 The bridge deliberately exposes only version, readiness probe, static set,
 opt-in experimental one-shot set, clear, USB Wi-Fi preparation, and an exact-target
-request that makes the Developer Mode option expected in Settings. It never mounts a Developer
-Disk Image, enables Developer Mode, reboots, pairs a phone, starts a privileged
+request that makes the Developer Mode option expected in Settings. The separate
+native path uses only a verified Apple Mach-O for persistent location commands;
+Apple may prepare its own developer-image services. The SDK never installs an
+image, enables Developer Mode, reboots, pairs a phone, starts a privileged
 tunnel, retries a request, or falls back to RemotePairing.
 """
 
@@ -14,7 +16,9 @@ import logging
 import math
 import os
 import re
+import stat
 import sys
+import uuid
 from decimal import Decimal, InvalidOperation
 from importlib import metadata
 from pathlib import Path
@@ -22,13 +26,17 @@ from typing import Any, Dict, Optional, Tuple
 
 
 PROTOCOL_VERSION = 1
-BACKEND_VERSION = "1.3.1"
+BACKEND_VERSION = "1.4.0"
 PINNED_PYMOBILEDEVICE3_VERSION = "10.9.0"
 MINIMUM_IOS = (17, 4)
 MAX_REQUEST_BYTES = 4096
 CONNECT_TIMEOUT_SECONDS = 45.0
 SERVICE_TIMEOUT_SECONDS = 30.0
 CLOSE_TIMEOUT_SECONDS = 5.0
+NATIVE_TOOL_PATH = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"
+NATIVE_CAPABILITY = "com.apple.coredevice.feature.simulatelocation"
+NATIVE_OUTPUT_LIMIT = 2 * 1024 * 1024
+NATIVE_PROCESS_TIMEOUT_SECONDS = 30.0
 UDID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 ECID_PATTERN = re.compile(r"^0x[0-9A-F]{1,16}$")
 IPHONE_PRODUCT_TYPE_PATTERN = re.compile(r"^iPhone[1-9][0-9]*,(?:0|[1-9][0-9]*)$")
@@ -218,6 +226,7 @@ class BackendImports:
         self.LocationSimulation = LocationSimulation
         self.create_using_usbmux = create_using_usbmux
         self.AmfiService = AmfiService
+        self.NativeLocationTool = NativeLocationTool
         self.device_not_found_errors = (DeviceNotFoundError, NoDeviceConnectedError)
         self.pairing_errors = (NotPairedError, PairingError)
         self.trust_errors = (NotTrustedError, PairingDialogResponsePendingError)
@@ -579,6 +588,330 @@ async def enable_wifi(
                 pass
 
 
+class NativeToolUnavailableError(Exception):
+    pass
+
+
+class NativeCommandError(Exception):
+    pass
+
+
+class NativeSchemaError(Exception):
+    pass
+
+
+class NativeTargetNotFoundError(Exception):
+    pass
+
+
+def native_uuid(value: Any) -> str:
+    if not isinstance(value, str):
+        raise NativeSchemaError()
+    try:
+        parsed = str(uuid.UUID(value)).upper()
+    except (ValueError, AttributeError):
+        raise NativeSchemaError() from None
+    if parsed != value.upper():
+        raise NativeSchemaError()
+    return parsed
+
+
+def native_tool_file_valid() -> bool:
+    """Accept only the fixed root-owned, non-writable, non-symlink Mach-O."""
+    tool = Path(NATIVE_TOOL_PATH)
+    try:
+        for index, path in enumerate((tool,) + tuple(tool.parents)):
+            metadata_value = path.lstat()
+            if metadata_value.st_uid != 0 or metadata_value.st_mode & 0o022:
+                return False
+            expected_kind = stat.S_ISREG if index == 0 else stat.S_ISDIR
+            if not expected_kind(metadata_value.st_mode):
+                return False
+            if index == 0 and not metadata_value.st_mode & 0o111:
+                return False
+        with tool.open("rb") as stream:
+            return stream.read(4) in (
+                b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
+                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+            )
+    except (OSError, ValueError):
+        return False
+
+
+def native_child_environment() -> Dict[str, str]:
+    # Do not inherit the SDK's private HOME/XDG paths or caller toolchain,
+    # loader, Python, proxy, or credential variables. Apple uses its OS account
+    # databases when HOME is absent; the parent process remains unchanged.
+    result = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"}
+    temporary = os.environ.get("TMPDIR", "/private/tmp")
+    if temporary.startswith("/") and "\x00" not in temporary:
+        result["TMPDIR"] = temporary
+    return result
+
+
+def native_child_arguments(action: str, arguments: Tuple[str, ...]) -> Tuple[str, ...]:
+    """The sole child-process allowlist: signature check or five fixed CLI shapes."""
+    if action == "verify" and not arguments:
+        return ("/usr/bin/codesign", "--verify", "--strict", "-R", "=anchor apple", NATIVE_TOOL_PATH)
+    common = ("--timeout", "20", "--json-output", "-")
+    if action == "list" and not arguments:
+        return (NATIVE_TOOL_PATH, "list", "devices") + common
+    if action in ("details", "clear") and len(arguments) == 1:
+        target = native_uuid(arguments[0])
+        words = ("device", "info", "details") if action == "details" else ("device", "simulate", "location", "clear")
+        return (NATIVE_TOOL_PATH,) + words + ("--device", target) + common
+    if action == "set" and len(arguments) == 3:
+        target = native_uuid(arguments[0])
+        if any(not isinstance(value, str) or len(value) > 350 or DECIMAL_PATTERN.fullmatch(value) is None
+               for value in arguments[1:]):
+            raise NativeSchemaError()
+        latitude = parse_coordinate(Decimal(arguments[1]), Decimal("-90"), Decimal("90"))
+        longitude = parse_coordinate(Decimal(arguments[2]), Decimal("-180"), Decimal("180"))
+        if latitude is None or longitude is None:
+            raise NativeSchemaError()
+        return (
+            NATIVE_TOOL_PATH, "device", "simulate", "location", "coordinate", "--device", target,
+            "--latitude=" + arguments[1], "--longitude=" + arguments[2],
+        ) + common
+    raise NativeSchemaError()
+
+
+async def run_native_child(action: str, arguments: Tuple[str, ...] = ()) -> Tuple[int, bytes, bytes]:
+    argv = native_child_arguments(action, arguments)
+    process = await asyncio.create_subprocess_exec(
+        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, env=native_child_environment(), cwd="/",
+    )
+    captured_bytes = 0
+
+    async def capture(stream: Any) -> bytes:
+        nonlocal captured_bytes
+        chunks = []
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                return b"".join(chunks)
+            captured_bytes += len(chunk)
+            if captured_bytes > NATIVE_OUTPUT_LIMIT:
+                raise NativeCommandError()
+            chunks.append(chunk)
+
+    tasks = (
+        asyncio.create_task(process.wait()),
+        asyncio.create_task(capture(process.stdout)),
+        asyncio.create_task(capture(process.stderr)),
+    )
+    try:
+        result = await asyncio.wait_for(asyncio.gather(*tasks), timeout=NATIVE_PROCESS_TIMEOUT_SECONDS)
+        return result[0], result[1], result[2]
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=CLOSE_TIMEOUT_SECONDS)
+            except BaseException:
+                pass
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class NativeLocationTool:
+    async def verify(self) -> None:
+        if not native_tool_file_valid():
+            raise NativeToolUnavailableError()
+        try:
+            status, _output, _error = await run_native_child("verify")
+        except (OSError, NativeCommandError, asyncio.TimeoutError):
+            raise NativeToolUnavailableError() from None
+        if status != 0:
+            raise NativeToolUnavailableError()
+
+    async def request(self, action: str, arguments: Tuple[str, ...] = ()) -> Dict[str, Any]:
+        status, output, _error = await run_native_child(action, arguments)
+        if status != 0:
+            raise NativeCommandError()
+        try:
+            value = json.loads(
+                output.decode("utf-8", errors="strict"),
+                parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+            )
+        except (ValueError, UnicodeError):
+            raise NativeSchemaError() from None
+        if (
+            not isinstance(value, dict) or not isinstance(value.get("info"), dict)
+            or value["info"].get("outcome") != "success"
+            or "error" in value or not isinstance(value.get("result"), dict)
+        ):
+            raise NativeSchemaError()
+        return value["result"]
+
+
+def native_hardware_records(record: Dict[str, Any]) -> list:
+    properties = record.get("properties", {})
+    if not isinstance(properties, dict):
+        raise NativeSchemaError()
+    records = []
+    if "hardware" in properties:
+        records.append(properties["hardware"])
+    if "hardwareProperties" in record:
+        records.append(record["hardwareProperties"])
+    if not records or any(not isinstance(value, dict) for value in records):
+        raise NativeSchemaError()
+    return records
+
+
+def attest_native_record(record: Any, udid: str, product_type: str, ecid: int) -> str:
+    if not isinstance(record, dict):
+        raise NativeSchemaError()
+    target_uuid = native_uuid(record.get("identifier"))
+    for hardware in native_hardware_records(record):
+        if (
+            normalized_udid(hardware.get("udid")) != normalized_udid(udid)
+            or hardware.get("productType") != product_type
+            or type(hardware.get("ecid")) is not int or hardware["ecid"] != ecid
+            or hardware.get("deviceType") != "iPhone" or hardware.get("platform") != "iOS"
+        ):
+            raise TargetMismatchError()
+    properties = record.get("properties", {})
+    connections = []
+    if "connection" in properties:
+        connections.append((properties["connection"], "state"))
+    if "connectionProperties" in record:
+        connections.append((record["connectionProperties"], "tunnelState"))
+    if not connections:
+        raise NativeSchemaError()
+    for connection, state_key in connections:
+        if not isinstance(connection, dict):
+            raise NativeSchemaError()
+        if connection.get("pairingState") != "paired":
+            raise PairingRequiredError()
+        if connection.get(state_key) != "connected" or connection.get("transportType") != "wired":
+            raise NativeTargetNotFoundError()
+    state = properties.get("state", {})
+    if not isinstance(state, dict):
+        raise NativeSchemaError()
+    if "developerModeStatus" in state:
+        mode = state["developerModeStatus"]
+        if not isinstance(mode, dict) or not isinstance(mode.get("enabled"), dict):
+            raise DeveloperModeDisabledError()
+    legacy_device = record.get("deviceProperties", {})
+    if not isinstance(legacy_device, dict):
+        raise NativeSchemaError()
+    if "developerModeStatus" in legacy_device and legacy_device["developerModeStatus"] != "enabled":
+        raise DeveloperModeDisabledError()
+    return target_uuid
+
+
+def select_native_target(result: Dict[str, Any], udid: str, product_type: str, ecid: int) -> str:
+    devices = result.get("devices")
+    if not isinstance(devices, list):
+        raise NativeSchemaError()
+    matching = []
+    for record in devices:
+        if not isinstance(record, dict):
+            raise NativeSchemaError()
+        try:
+            hardware = native_hardware_records(record)
+        except NativeSchemaError:
+            continue  # unrelated simulators may not expose hardware identity
+        if any(normalized_udid(value.get("udid")) == normalized_udid(udid) for value in hardware):
+            matching.append(record)
+    if not matching:
+        raise NativeTargetNotFoundError()
+    if len(matching) != 1:
+        raise TargetMismatchError()
+    return attest_native_record(matching[0], udid, product_type, ecid)
+
+
+async def open_native_usb_target(imports: BackendImports, udid: str, product_type: str, ecid: int) -> Any:
+    lockdown = await open_attested_lockdown(imports, udid, product_type, ecid, "USB")
+    try:
+        enabled = await asyncio.wait_for(lockdown.get_developer_mode_status(), timeout=SERVICE_TIMEOUT_SECONDS)
+        if enabled is not True:
+            raise DeveloperModeDisabledError()
+        return lockdown
+    except BaseException:
+        await close_bounded(lockdown.close())
+        raise
+
+
+async def execute_native(
+    command: str, imports: BackendImports, udid: str, product_type: str, ecid: int,
+    latitude: Optional[float], longitude: Optional[float],
+) -> int:
+    emit_hello()
+    lockdown = None
+    phase = "usb"
+    try:
+        lockdown = await open_native_usb_target(imports, udid, product_type, ecid)
+        if not await close_bounded(lockdown.close()):
+            raise NativeCommandError()
+        lockdown = None
+        phase = "nativeTool"
+        tool = imports.NativeLocationTool()
+        await tool.verify()
+        phase = "nativeAttestation"
+        target_uuid = select_native_target(await tool.request("list"), udid, product_type, ecid)
+        details = await tool.request("details", (target_uuid,))
+        if attest_native_record(details, udid, product_type, ecid) != target_uuid:
+            raise TargetMismatchError()
+        capabilities = details.get("capabilities")
+        if not isinstance(capabilities, list) or not any(
+            isinstance(value, dict) and value.get("featureIdentifier") == NATIVE_CAPABILITY
+            for value in capabilities
+        ):
+            raise NativeToolUnavailableError()
+        # Details can be cached. Reopen and validate the exact live USB target
+        # immediately before dispatch, retaining this handle through the action.
+        phase = "usb"
+        lockdown = await open_native_usb_target(imports, udid, product_type, ecid)
+        emit("attested", "ok", product_type=product_type)
+        emit("ready", "ok")
+        if command == "probe-native":
+            return 0
+        phase = "nativeSet" if command == "set-native-persistent" else "nativeClear"
+        emit("requestDispatched", "working")
+        if command == "set-native-persistent":
+            assert latitude is not None and longitude is not None
+            result = await tool.request("set", (
+                target_uuid, format(Decimal(repr(latitude)), "f"), format(Decimal(repr(longitude)), "f"),
+            ))
+        else:
+            result = await tool.request("clear", (target_uuid,))
+        if "deviceIdentifier" in result and native_uuid(result["deviceIdentifier"]) != target_uuid:
+            raise TargetMismatchError()
+        if command == "set-native-persistent":
+            emit("active", "assumedActive", persistence="experimental")
+        else:
+            emit("clearSent", "realLocationExpected")
+        return 0
+    except TargetMismatchError:
+        return fail("target_mismatch", "attestation")
+    except PairingRequiredError:
+        return fail("pairing_required", "pairing")
+    except DeveloperModeDisabledError:
+        return fail("developer_mode_required", "developerMode")
+    except UnsupportedOSError:
+        return fail("developer_service_unavailable", "attestation")
+    except NativeToolUnavailableError:
+        return fail("native_tool_unavailable", phase, 4)
+    except NativeTargetNotFoundError:
+        return fail("target_not_found", phase, 4)
+    except (NativeCommandError, NativeSchemaError):
+        return fail("developer_service_unavailable", phase, 4)
+    except BaseException as error:
+        return fail(map_exception(imports, error, phase), phase, 4)
+    finally:
+        if lockdown is not None:
+            await close_bounded(lockdown.close())
+
+
 async def read_live_control(tunnel: Any) -> Optional[bytes]:
     """Prefer transport loss over a simultaneous control request; never retry."""
     control_task = asyncio.create_task(read_stdin_line())
@@ -617,9 +950,10 @@ async def close_persistent_context(dvt: Any, tunnel: Any) -> bool:
 async def execute(command: str, request: Dict[str, Any], imports: BackendImports) -> int:
     allowed_fields = {"udid", "expectedProductType"}
     optional_fields = set()
-    if command in ("set", "set-persistent"):
+    native_command = command in ("probe-native", "set-native-persistent", "clear-native")
+    if command in ("set", "set-persistent", "set-native-persistent"):
         allowed_fields.update(("latitude", "longitude"))
-    elif command in ("reveal-developer-mode", "enable-wifi"):
+    if command in ("reveal-developer-mode", "enable-wifi") or native_command:
         allowed_fields.add("expectedECID")
     if command in ("probe", "set", "clear"):
         optional_fields.update(("transport", "expectedECID"))
@@ -643,18 +977,24 @@ async def execute(command: str, request: Dict[str, Any], imports: BackendImports
     if transport not in ("usb", "wifi"):
         return fail("invalid_request", "request", 2)
     expected_ecid = None
-    if transport == "wifi" or "expectedECID" in request:
+    if native_command or transport == "wifi" or "expectedECID" in request:
         expected_ecid = parse_ecid(request.get("expectedECID"))
         if expected_ecid is None:
             return fail("invalid_request", "request", 2)
 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    if command in ("set", "set-persistent"):
+    if command in ("set", "set-persistent", "set-native-persistent"):
         latitude = parse_coordinate(request.get("latitude"), Decimal("-90"), Decimal("90"))
         longitude = parse_coordinate(request.get("longitude"), Decimal("-180"), Decimal("180"))
         if latitude is None or longitude is None:
             return fail("invalid_request", "request", 2)
+
+    if native_command:
+        assert expected_ecid is not None
+        return await execute_native(
+            command, imports, udid, expected_product_type, expected_ecid, latitude, longitude,
+        )
 
     emit_hello()
     tunnel = None
@@ -770,6 +1110,9 @@ def main() -> int:
         "clear",
         "reveal-developer-mode",
         "enable-wifi",
+        "probe-native",
+        "set-native-persistent",
+        "clear-native",
     ):
         return fail("invalid_request", "startup", 2)
     command = sys.argv[1]

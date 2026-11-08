@@ -81,6 +81,10 @@ struct MockLocationView: View {
             if transport == .wifi { persistentModeEnabled = false }
             inputError = nil
         }
+        .onChange(of: controller.selectedEngine) { _ in
+            persistentModeEnabled = false
+            inputError = nil
+        }
     }
 
     private var statusHero: some View {
@@ -185,7 +189,7 @@ struct MockLocationView: View {
                     }
                 }
 
-                if controller.selectedTransport == .usb {
+                if controller.selectedEngine == .dvt && controller.selectedTransport == .usb {
                     Toggle(isOn: $persistentModeEnabled) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Persistent until Clear/Reboot (Experimental)")
@@ -275,6 +279,56 @@ struct MockLocationView: View {
 
     private var transportControls: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text("Location driver")
+                .font(.callout.weight(.semibold))
+            Picker("Location driver", selection: Binding(
+                get: { controller.selectedEngine },
+                set: { controller.selectEngine($0) }
+            )) {
+                ForEach(MockLocationEngine.allCases) { engine in
+                    Text(engine == .dvt ? "DVT" : "Apple Native (Experimental)").tag(engine)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 480)
+            .disabled(!controller.canSelectEngine)
+            .accessibilityIdentifier("mockLocationEnginePicker")
+
+            if controller.selectedEngine == .appleNative {
+                nativeInstructions
+            } else {
+                dvtTransportControls
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.045)))
+    }
+
+    private var nativeInstructions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Apple Native persistence is experimental", systemImage: "location.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text("Uses Apple's installed developer tools to send a persistent test-location request. Keep the iPhone connected by USB and unlocked for Check Readiness and Set.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("After Set is acknowledged, check the location on the physical iPhone, then disconnect USB and Wi-Fi to test retention. Persistence remains assumed until you verify it yourself.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Reconnect the same iPhone by USB and choose Return to Real Location to send Apple's native Clear command.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityIdentifier("mockLocationNativeInstructions")
+    }
+
+    private var dvtTransportControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Connection")
                 .font(.callout.weight(.semibold))
             Picker("Connection", selection: Binding(
@@ -328,9 +382,6 @@ struct MockLocationView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.045)))
     }
 
     private func coordinateField(
@@ -354,6 +405,8 @@ struct MockLocationView: View {
     private var targetPanel: some View {
         MockLocationPanel(title: "Exact target", systemImage: "scope", accent: targetPanelAccent) {
             VStack(spacing: 0) {
+                MockLocationFactRow(label: "Location driver", value: controller.selectedEngine.displayName)
+                Divider()
                 MockLocationFactRow(label: "Connection", value: controller.isWiFiSessionActive ? "Wi-Fi live session" : controller.selectedTransport.displayName)
                 Divider()
                 MockLocationFactRow(label: controller.isWiFiSessionActive ? "Mode at start" : "Mode", value: controller.isWiFiSessionActive ? "Normal iOS · attested" : model.snapshot.mode.title)
@@ -433,7 +486,9 @@ struct MockLocationView: View {
                 }
                 Divider()
                 readinessRow(
-                    title: controller.selectedTransport == .wifi ? "Wi-Fi developer tunnel" : "USB developer tunnel",
+                    title: controller.selectedEngine == .appleNative
+                        ? "Apple Native developer connection"
+                        : (controller.selectedTransport == .wifi ? "Wi-Fi developer tunnel" : "USB developer tunnel"),
                     detail: developerChecksReady ? "Probe succeeded" : readinessDetail(for: .tunnelUnavailable),
                     state: developerChecksReady ? .ready : readinessState(for: .tunnelUnavailable)
                 )
@@ -473,7 +528,11 @@ struct MockLocationView: View {
                 safetyLine("The Set action is always pinned to one verified UDID/product and is rechecked immediately before launch.")
                 safetyLine("Simulation is reported as assumed active because the developer service has no getter.")
                 safetyLine("Wi-Fi uses one live session on the same verified iPhone. Keep the Mac awake and the network connected; a lost session is not retried automatically.")
-                safetyLine("Experimental persistence is recorded only after Set returns and the backend exits cleanly without sending Clear; it is never described as verified or permanent.")
+                if controller.selectedEngine == .appleNative {
+                    safetyLine("Apple Native persistence remains assumed after its Set command succeeds. Verify retention on the physical iPhone after USB and Wi-Fi are disconnected; the saved record requires a native Clear on the same phone.")
+                } else {
+                    safetyLine("Experimental persistence is recorded only after Set returns and the backend exits cleanly without sending Clear; it is never described as verified or permanent.")
+                }
                 safetyLine("Recovery, Restore, Factory Reset, power controls, and other device mutations must remain blocked while simulation is active or uncertain.")
                 safetyLine("The journal stores only a one-way target fingerprint and state timestamps—never coordinates or raw device identifiers.")
                 }
@@ -507,7 +566,8 @@ struct MockLocationView: View {
             inputError = nil
             controller.setLocation(
                 coordinate,
-                mode: controller.selectedTransport == .usb && persistentModeEnabled
+                mode: controller.selectedEngine == .appleNative ||
+                    (controller.selectedTransport == .usb && persistentModeEnabled)
                     ? .persistentUntilClearOrReboot
                     : .liveSession
             )
@@ -574,6 +634,7 @@ struct MockLocationView: View {
     }
 
     private var setButtonTitle: String {
+        if controller.selectedEngine == .appleNative { return "Set Native Persistent Location" }
         if controller.selectedTransport == .wifi { return "Start Wi-Fi Mock Location" }
         return persistentModeEnabled
             ? "Set Persistent Location (Experimental)"
@@ -581,6 +642,9 @@ struct MockLocationView: View {
     }
 
     private var clearGuidance: String {
+        if controller.selectedEngine == .appleNative || controller.isNativePersistent {
+            return "Reconnect the same iPhone by USB and use this button to send Apple's native Clear command. The safety record remains until that command is acknowledged."
+        }
         if controller.isWiFiSessionActive {
             return "Return to real location through the same live Wi-Fi session before quitting. The USB cable is not required while this session remains connected."
         }
@@ -594,6 +658,11 @@ struct MockLocationView: View {
     }
 
     private var readinessGuidance: String {
+        if controller.selectedEngine == .appleNative {
+            return developerChecksReady
+                ? "The Apple Native developer connection is ready. Keep USB connected and set the test coordinate, then verify retention on the physical iPhone."
+                : "Connect and unlock the same iPhone by USB, accept Trust, then check Apple's native developer connection before setting a persistent test location."
+        }
         if controller.isWiFiSessionActive {
             return "The live Wi-Fi session is connected to the verified iPhone. The USB cable may be disconnected."
         }
@@ -695,6 +764,7 @@ struct MockLocationView: View {
     private var statusBadge: String {
         if controller.reviewRequired { return "REVIEW REQUIRED" }
         if controller.isWiFiSessionActive { return "WI-FI SESSION ACTIVE" }
+        if controller.isNativePersistent { return "NATIVE PERSISTENCE ASSUMED" }
         if controller.isAssumedPersistent { return "PERSISTENCE ASSUMED" }
         if controller.isAssumedActive { return "USB LIVE · CABLE REQUIRED" }
         if controller.isBusy { return "WORKING" }

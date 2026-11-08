@@ -22,8 +22,11 @@ struct MockLocationTestMain {
         var setConfirmationCount = 0
         var reconnectConfirmationCount = 0
         var confirmEnable = true
+        var confirmSet = true
         var confirmReconnect = true
         var afterEnableConfirmation: (() -> Void)?
+        var afterSetConfirmation: (() -> Void)?
+        var confirmedModes: [MockLocationSetMode] = []
     }
 
     static func main() {
@@ -49,6 +52,12 @@ struct MockLocationTestMain {
         testWiFiSetupGuards(expect: expect)
         testWiFiSessionLifecycle(expect: expect)
         testWiFiConnectionLossRecovery(expect: expect)
+        testNativeCommandAndJournal(expect: expect)
+        testNativePersistentLifecycle(expect: expect)
+        testNativeClearWithoutJournal(expect: expect)
+        testNativeSetGuards(expect: expect)
+        testNativePersistentFailureAcknowledgements(expect: expect)
+        testRecoveredNativeJournalRouting(expect: expect)
         testPersistentFailureLifecycle(expect: expect)
         testPersistentClearGuards(expect: expect)
         testOutOfOrderActiveKeepsDeadline(expect: expect)
@@ -640,14 +649,17 @@ struct MockLocationTestMain {
         expect(recoveredPersistent.blocksDeviceMutation, "recovered persistent state must keep all other device mutations blocked")
         expect(!recoveredPersistent.reviewRequired, "clean persistent recovery must remain distinct from interrupted uncertainty")
 
+        let unreadablePreflights = Counter()
+        let unreadableConfirmations = Counter()
+        let unreadableJournalMutations = Counter()
         let unreadable = MockLocationController(
             resolveBackend: {
                 .success(MockLocationBackendDescriptor(executableURL: URL(fileURLWithPath: "/fixture/mock-backend")))
             },
             journal: MockLocationJournalClient(
                 load: { throw MockLocationJournalError.cannotRead },
-                write: { _ in },
-                remove: { }
+                write: { _ in unreadableJournalMutations.value += 1 },
+                remove: { unreadableJournalMutations.value += 1 }
             )
         )
         let snapshot = targetFixture()
@@ -655,20 +667,25 @@ struct MockLocationTestMain {
             currentSnapshot: { snapshot },
             hostGate: { .idle },
             requestFreshEvidence: { completion in
+                unreadablePreflights.value += 1
                 completion(MockLocationFreshEvidence(snapshot: snapshot, pairingAndTrustVerified: true))
             },
             confirmForgetUnavailableRecord: { _ in false },
             confirmDeveloperModeOptionRequest: { _ in false },
             confirmSet: { _, _, _ in false },
-            confirmUnpinnedClear: { _ in false },
+            confirmUnpinnedClear: { _ in
+                unreadableConfirmations.value += 1
+                return true
+            },
             confirmReconnectedClear: { _, _ in false }
         ))
         expect(unreadable.reviewRequired, "unreadable journal must remain a conservative review state")
-        expect(unreadable.canReturnToRealLocation, "unreadable journal review must still offer an explicitly confirmed exact-target clear path")
+        expect(!unreadable.canReturnToRealLocation, "an unreadable journal must not guess whether Native or DVT Clear is required")
         unreadable.returnToRealLocation()
         waitUntil(timeout: 1) { !unreadable.isBusy }
-        expect(!unreadable.isBusy, "cancelling the unreadable-journal recovery confirmation must remain idle")
-        expect(unreadable.reviewRequired, "cancelling recovery must preserve the conservative review lock")
+        expect(!unreadable.isBusy && unreadablePreflights.value == 0 && unreadableConfirmations.value == 0, "unknown-engine recovery must stop before Trust probing, confirmation, or dispatch")
+        expect(unreadableJournalMutations.value == 0, "unknown-engine recovery must preserve the unreadable journal without writes or removal")
+        expect(unreadable.reviewRequired && unreadable.blocksDeviceMutation, "unknown-engine recovery must preserve the conservative review lock")
     }
 
     private static func testDeveloperModeOptionLifecycle(expect: (Bool, String) -> Void) {
@@ -1371,7 +1388,8 @@ exit 2
     private static func makeWiFiController(
         executable: URL,
         state: WiFiHostState,
-        stored: Box<MockLocationJournalRecord?>
+        stored: Box<MockLocationJournalRecord?>,
+        persistentTeardownTimeout: TimeInterval = 45
     ) -> MockLocationController {
         let controller = MockLocationController(
             resolveBackend: { .success(MockLocationBackendDescriptor(executableURL: executable)) },
@@ -1379,7 +1397,8 @@ exit 2
                 load: { stored.value },
                 write: { stored.value = try $0.validated() },
                 remove: { stored.value = nil }
-            )
+            ),
+            persistentTeardownTimeout: persistentTeardownTimeout
         )
         var callbacks = MockLocationController.HostCallbacks(
             currentSnapshot: { state.snapshot },
@@ -1392,9 +1411,11 @@ exit 2
             },
             confirmForgetUnavailableRecord: { _ in false },
             confirmDeveloperModeOptionRequest: { _ in false },
-            confirmSet: { _, _, _ in
+            confirmSet: { _, _, mode in
                 state.setConfirmationCount += 1
-                return true
+                state.confirmedModes.append(mode)
+                state.afterSetConfirmation?()
+                return state.confirmSet
             },
             confirmUnpinnedClear: { _ in false },
             confirmReconnectedClear: { _, _ in
@@ -1568,6 +1589,365 @@ exit 2
             expect(clearLines.count == 1 && !clearLines[0].contains("\"transport\":\"wifi\""), "lost Wi-Fi recovery must explicitly use the freshly attested USB target without network retry")
         } catch {
             expect(false, "Wi-Fi connection-loss fixture failed")
+        }
+    }
+
+    private static func testNativeCommandAndJournal(expect: (Bool, String) -> Void) {
+        guard let target = try? MockLocationExactTarget(snapshot: targetFixture(productType: "iPhone18,3")),
+              let coordinate = try? MockLocationCoordinate(latitude: 13.7563, longitude: 100.5018) else {
+            expect(false, "Native command and journal fixtures must initialize")
+            return
+        }
+        let descriptor = MockLocationBackendDescriptor(executableURL: URL(fileURLWithPath: "/fixture/private-native-backend"))
+        let commands = [
+            MockLocationCommandBuilder.probeNative(backend: descriptor, target: target),
+            MockLocationCommandBuilder.setNativePersistent(backend: descriptor, target: target, coordinate: coordinate),
+            MockLocationCommandBuilder.clearNative(backend: descriptor, target: target)
+        ]
+        expect(commands.map(\.arguments) == [["probe-native"], ["set-native-persistent"], ["clear-native"]], "Native commands must retain distinct reviewed operations")
+        for command in commands {
+            let request = try? JSONSerialization.jsonObject(with: Data(command.initialRequest.dropLast())) as? [String: Any]
+            expect(request?["udid"] as? String == target.udid && request?["expectedECID"] as? String == target.ecid, "every Native command must pin stable UDID and ECID over private stdin")
+            expect(request?["expectedProductType"] as? String == target.productType, "every Native command must pin the exact ProductType")
+            let isSet = command.operation == .setNativePersistent
+            expect(request?.count == (isSet ? 5 : 3), "Native operations must contain only exact identity and optional Set coordinates")
+            expect(command.arguments.count == 1 && !command.arguments.joined().contains(target.udid), "Native device identifiers must never enter process argv")
+        }
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let native = MockLocationJournalRecord(
+            state: .assumedPersistent,
+            pin: target.pin,
+            stablePin: target.stablePin,
+            setMode: .persistentUntilClearOrReboot,
+            engine: .appleNative,
+            requestDispatched: true,
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
+        do {
+            let nativeData = try JSONEncoder().encode(native)
+            let decoded = try JSONDecoder().decode(MockLocationJournalRecord.self, from: nativeData)
+            expect(try decoded.validated() == native && decoded.schema == 4, "schema-v4 must round-trip Native persistent recovery identity")
+            let text = String(data: nativeData, encoding: .utf8) ?? ""
+            expect(!text.contains(target.udid) && !text.localizedCaseInsensitiveContains(target.ecid), "Native journals must never retain raw stable identifiers")
+            expect(!text.contains("13.7563") && !text.contains("100.5018"), "Native journals must never retain requested coordinates")
+
+            let dvt = MockLocationJournalRecord(
+                state: .assumedActive,
+                pin: target.pin,
+                stablePin: target.stablePin,
+                requestDispatched: true,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+            for schema in [1, 2, 3] {
+                var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(dvt)) as? [String: Any] ?? [:]
+                object["schema"] = schema
+                object.removeValue(forKey: "engine")
+                if schema == 1 {
+                    object.removeValue(forKey: "stableTargetFingerprint")
+                    object.removeValue(forKey: "setMode")
+                }
+                if schema < 3 { object.removeValue(forKey: "transport") }
+                let legacy = try JSONDecoder().decode(MockLocationJournalRecord.self, from: JSONSerialization.data(withJSONObject: object))
+                expect(try legacy.validated().engine == .dvt, "schema-v\(schema) must default missing engine to the original DVT implementation")
+                object["engine"] = MockLocationEngine.appleNative.rawValue
+                let forged = try JSONDecoder().decode(MockLocationJournalRecord.self, from: JSONSerialization.data(withJSONObject: object))
+                do {
+                    _ = try forged.validated()
+                    expect(false, "schema-v\(schema) must reject an injected Native engine")
+                } catch {
+                    expect(true, "legacy engine confusion must fail closed")
+                }
+            }
+            let wifi = MockLocationJournalRecord(
+                state: .assumedActive,
+                pin: target.pin,
+                stablePin: target.stablePin,
+                transport: .wifi,
+                requestDispatched: true,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+            var wifiObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(wifi)) as? [String: Any] ?? [:]
+            wifiObject["schema"] = 3
+            wifiObject.removeValue(forKey: "engine")
+            let legacyWiFi = try JSONDecoder().decode(MockLocationJournalRecord.self, from: JSONSerialization.data(withJSONObject: wifiObject))
+            expect(try legacyWiFi.validated().engine == .dvt && legacyWiFi.transport == .wifi, "schema-v3 migration must preserve Wi-Fi recovery while defaulting its missing engine to DVT")
+
+            let invalidNative = MockLocationJournalRecord(
+                state: .assumedActive,
+                pin: target.pin,
+                stablePin: target.stablePin,
+                engine: .appleNative,
+                requestDispatched: true,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+            do {
+                _ = try invalidNative.validated()
+                expect(false, "Native journals must reject an unsupported live-session mode")
+            } catch {
+                expect(true, "Native mode mismatch must fail closed")
+            }
+        } catch {
+            expect(false, "Native journal encoding or migration failed")
+        }
+    }
+
+    private static func writeNativeBackendFixture(
+        directory: URL,
+        setOutcome: String = "clean"
+    ) throws -> (executable: URL, requestLog: URL) {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("private-native-backend")
+        let requestLog = directory.appendingPathComponent("requests.jsonl")
+        let hello = #"{"event":"hello","protocol":1,"backend_version":"1.4.0"}"#
+        let attested = #"{"event":"attested","product_type":"iPhone18,3"}"#
+        let ready = #"{"event":"ready"}"#
+        let dispatched = #"{"event":"requestDispatched"}"#
+        let active = #"{"event":"active","persistence":"experimental"}"#
+        let clear = #"{"event":"clearSent"}"#
+        func events(_ lines: [String]) -> String {
+            lines.map { "/usr/bin/printf '%s\\n' '\($0)'" }.joined(separator: "\n")
+        }
+        var setEvents = [hello, attested, ready, dispatched, active]
+        var setCompletion = "exit 0"
+        switch setOutcome {
+        case "no-active": setEvents = [hello, attested, ready, dispatched]
+        case "missing-attestation": setEvents = [hello, ready, dispatched, active]
+        case "wrong-target": setEvents[1] = #"{"event":"attested","product_type":"iPhone15,4"}"#
+        case "old-version": setEvents[0] = #"{"event":"hello","protocol":1,"backend_version":"1.3.0"}"#
+        case "unclean-exit": setCompletion = "exit 5"
+        case "cleanup-hang": setCompletion = "exec /bin/sleep 10"
+        default: break
+        }
+        let quotedLog = "'" + requestLog.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let script = """
+        #!/bin/zsh
+        IFS= read -r initial_request
+        /usr/bin/printf '%s|%s\\n' "$1" "$initial_request" >> \(quotedLog)
+        case "$1" in
+          probe|probe-native)
+            \(events([hello, attested, ready]))
+            exit 0
+            ;;
+          set-native-persistent)
+            \(events(setEvents))
+            \(setCompletion)
+            ;;
+          clear-native)
+            \(events([hello, attested, ready, dispatched, clear]))
+            exit 0
+            ;;
+        esac
+        exit 2
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return (executable, requestLog)
+    }
+
+    private static func testNativePersistentLifecycle(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-Native-Lifecycle-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            let fixture = try writeNativeBackendFixture(directory: directory)
+            let state = WiFiHostState()
+            let original = state.snapshot
+            let stored = Box<MockLocationJournalRecord?>(nil)
+            let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+            controller.selectTransport(.wifi)
+            controller.checkReadiness()
+            waitUntil(timeout: 3) { controller.canSetLocation }
+            expect(controller.canSetLocation, "Native fixture must first prove existing DVT readiness")
+            controller.selectEngine(.appleNative)
+            expect(controller.selectedEngine == .appleNative && controller.selectedTransport == .usb, "selecting Native must force the explicit USB transport")
+            expect(!controller.canSetLocation, "selecting a different engine must invalidate prior DVT readiness")
+            controller.checkReadiness()
+            waitUntil(timeout: 3) { controller.canSetLocation }
+            expect(controller.canSetLocation, "Native Set must require a separate successful Native readiness probe")
+            let coordinate = try MockLocationCoordinate(latitude: 13.7563, longitude: 100.5018)
+            let countBeforeLive = state.preflightCount
+            controller.setLocation(coordinate, mode: .liveSession)
+            expect(!controller.isBusy && state.preflightCount == countBeforeLive && stored.value == nil, "Native live mode must be rejected before confirmation, journal writes, or dispatch")
+
+            controller.setLocation(coordinate, mode: .persistentUntilClearOrReboot)
+            waitUntil(timeout: 3) { controller.isAssumedPersistent && !controller.isBusy }
+            expect(controller.isAssumedPersistent, "Native Set requires active acknowledgement and clean helper exit before assumed persistence")
+            expect(stored.value?.engine == .appleNative && stored.value?.state == .assumedPersistent, "Native persistence must durably retain its engine for the matching Clear")
+            expect(state.preflightCount == countBeforeLive + 2 && state.confirmedModes == [.persistentUntilClearOrReboot], "Native Set must preserve two fresh Trust checks and the explicit persistent-mode confirmation")
+            expect(!controller.canSelectEngine && !controller.canSelectTransport, "an unresolved Native simulation must lock engine and transport selectors")
+            controller.selectEngine(.dvt)
+            expect(controller.selectedEngine == .appleNative, "a live Native obligation must never silently change Clear to DVT")
+
+            state.snapshot = DeviceSnapshot()
+            controller.refreshLocalState()
+            expect(controller.isAssumedPersistent && !controller.canReturnToRealLocation, "Native USB removal must preserve assumed persistence while requiring USB for Clear")
+            state.snapshot = original
+            state.snapshot.ecid = "0xABCDEF1234"
+            state.snapshot.udid = "00008030-00ABCDEF12345678"
+            controller.refreshLocalState()
+            expect(!controller.canReturnToRealLocation, "a different iPhone must never satisfy the Native reset obligation")
+            state.snapshot = original
+            state.snapshot.locationID = 2_097_152
+            controller.refreshLocalState()
+            expect(controller.canReturnToRealLocation, "the same stable Native target on a new USB port must permit guarded Clear")
+            let beforeClear = state.preflightCount
+            controller.returnToRealLocation()
+            waitUntil(timeout: 3) { !controller.blocksDeviceMutation }
+            expect(stored.value == nil && !controller.reviewRequired, "acknowledged Native Clear must remove the recovery journal")
+            expect(state.preflightCount == beforeClear + 2 && state.reconnectConfirmationCount == 1, "Native changed-port Clear must verify Trust twice around stable-target confirmation")
+            let log = try String(contentsOf: fixture.requestLog, encoding: .utf8)
+            let commands = log.split(separator: "\n").map { String($0.split(separator: "|", maxSplits: 1)[0]) }
+            expect(commands == ["probe", "probe-native", "set-native-persistent", "clear-native"], "Native lifecycle must route every operation to the selected engine and never DVT Clear")
+        } catch {
+            expect(false, "Native lifecycle fixture failed")
+        }
+    }
+
+    private static func testNativeClearWithoutJournal(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-Native-Fresh-Clear-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            let fixture = try writeNativeBackendFixture(directory: directory)
+            let state = WiFiHostState()
+            let stored = Box<MockLocationJournalRecord?>(nil)
+            let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+            controller.selectEngine(.appleNative)
+            controller.checkReadiness()
+            waitUntil(timeout: 3) { controller.canReturnToRealLocation }
+            expect(controller.canReturnToRealLocation && stored.value == nil, "a ready Native target must allow explicit Clear without a previous app-owned journal")
+            controller.returnToRealLocation()
+            waitUntil(timeout: 3) { !controller.blocksDeviceMutation }
+            if case .resetRequestSent = controller.simulationKnowledge {
+                expect(true, "fresh Native Clear must use a valid persistent-mode write-ahead journal")
+            } else {
+                expect(false, "fresh Native Clear must not fail journal validation before dispatch")
+            }
+            expect(stored.value == nil && !controller.reviewRequired, "acknowledged fresh Native Clear must remove its temporary recovery journal")
+            expect(state.preflightCount == 3, "fresh Native Clear must retain readiness plus two exact-target Trust checks")
+            let requests = try String(contentsOf: fixture.requestLog, encoding: .utf8).split(separator: "\n")
+            expect(requests.count == 2 && requests[1].hasPrefix("clear-native|"), "fresh Native Clear must dispatch the Native driver without a fallback or prior Set")
+        } catch {
+            expect(false, "fresh Native Clear fixture failed")
+        }
+    }
+
+    private static func testNativeSetGuards(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-Native-Guards-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            for scenario in ["cancel", "first-trust", "second-trust", "target-after-confirmation"] {
+                let fixture = try writeNativeBackendFixture(directory: directory.appendingPathComponent(scenario))
+                let state = WiFiHostState()
+                switch scenario {
+                case "cancel": state.confirmSet = false
+                case "first-trust": state.trustResults = [true, false]
+                case "second-trust": state.trustResults = [true, true, false]
+                default: state.afterSetConfirmation = { state.snapshot.ecid = "0xFFFFFFFF" }
+                }
+                let stored = Box<MockLocationJournalRecord?>(nil)
+                let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+                controller.selectEngine(.appleNative)
+                controller.checkReadiness()
+                waitUntil(timeout: 3) { controller.canSetLocation }
+                expect(controller.canSetLocation, "\(scenario): Native guard fixture must first reach readiness")
+                controller.setLocation(try MockLocationCoordinate(latitude: 13.7563, longitude: 100.5018), mode: .persistentUntilClearOrReboot)
+                waitUntil(timeout: 3) { !controller.isBusy }
+                expect(stored.value == nil && !controller.isAssumedPersistent && !controller.blocksDeviceMutation, "\(scenario): rejected Native Set must leave no mutation journal or persistent claim")
+                expect(state.preflightCount == (scenario == "cancel" || scenario == "first-trust" ? 2 : 3), "\(scenario): Native Set must stop at the exact failed preflight or confirmation")
+                expect(state.setConfirmationCount == (scenario == "first-trust" ? 0 : 1), "\(scenario): Native Set confirmation must follow the first successful Trust check")
+                let log = try String(contentsOf: fixture.requestLog, encoding: .utf8)
+                expect(!log.contains("set-native-persistent|"), "\(scenario): target/Trust rejection must occur before Native command dispatch")
+            }
+        } catch {
+            expect(false, "Native Set guard fixture failed")
+        }
+    }
+
+    private static func testNativePersistentFailureAcknowledgements(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-Native-Acknowledgements-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            for outcome in ["no-active", "missing-attestation", "wrong-target", "old-version", "unclean-exit", "cleanup-hang"] {
+                let fixture = try writeNativeBackendFixture(directory: directory.appendingPathComponent(outcome), setOutcome: outcome)
+                let state = WiFiHostState()
+                let stored = Box<MockLocationJournalRecord?>(nil)
+                let controller = makeWiFiController(
+                    executable: fixture.executable,
+                    state: state,
+                    stored: stored,
+                    persistentTeardownTimeout: 1
+                )
+                controller.selectEngine(.appleNative)
+                controller.checkReadiness()
+                waitUntil(timeout: 3) { controller.canSetLocation }
+                controller.setLocation(try MockLocationCoordinate(latitude: 13.7563, longitude: 100.5018), mode: .persistentUntilClearOrReboot)
+                waitUntil(timeout: 4) { controller.reviewRequired && !controller.isBusy }
+                expect(!controller.isBusy, "\(outcome): an acknowledged Native Set must honor the bounded teardown deadline")
+                expect(controller.reviewRequired && !controller.isAssumedPersistent, "\(outcome): an incomplete or unclean Native acknowledgement must never become assumed persistence")
+                expect(controller.blocksDeviceMutation && stored.value?.engine == .appleNative, "\(outcome): a launched Native Set must preserve the native reset obligation")
+                expect(!controller.canSetLocation && !controller.canSelectEngine, "\(outcome): Native uncertainty must block new Set and engine switching until Clear")
+                let log = try String(contentsOf: fixture.requestLog, encoding: .utf8)
+                expect(log.split(separator: "\n").filter { $0.hasPrefix("set-native-persistent|") }.count == 1, "\(outcome): Native failures must never retry Set automatically")
+                expect(!log.split(separator: "\n").contains { $0.hasPrefix("set|") || $0.hasPrefix("set-persistent|") || $0.hasPrefix("clear|") }, "\(outcome): failed Native requests must not fall back to DVT")
+            }
+        } catch {
+            expect(false, "Native acknowledgement fixture failed")
+        }
+    }
+
+    private static func testRecoveredNativeJournalRouting(expect: (Bool, String) -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("YIOS-Native-Recovery-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            let fixture = try writeNativeBackendFixture(directory: directory)
+            let state = WiFiHostState()
+            let original = state.snapshot
+            let target = try MockLocationExactTarget(snapshot: original)
+            let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+            let pending = MockLocationJournalRecord(
+                state: .pendingSet,
+                pin: target.pin,
+                stablePin: target.stablePin,
+                setMode: .persistentUntilClearOrReboot,
+                engine: .appleNative,
+                requestDispatched: false,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            )
+            let stored = Box<MockLocationJournalRecord?>(pending)
+            state.snapshot = DeviceSnapshot()
+            let controller = makeWiFiController(executable: fixture.executable, state: state, stored: stored)
+            expect(controller.selectedEngine == .appleNative && controller.selectedTransport == .usb, "recovering a Native journal must restore its Native engine and USB recovery path")
+            expect(controller.reviewRequired && !controller.isAssumedPersistent && controller.blocksDeviceMutation, "interrupted Native Set must recover conservatively with the global reset obligation intact")
+            controller.selectEngine(.dvt)
+            expect(controller.selectedEngine == .appleNative && !controller.canSelectEngine, "an interrupted Native journal must prevent engine switching before Clear")
+            state.snapshot = original
+            state.snapshot.ecid = "0xABCDEF1234"
+            state.snapshot.udid = "00008030-00ABCDEF12345678"
+            controller.refreshLocalState()
+            expect(!controller.canReturnToRealLocation, "a recovered Native journal must reject a different stable phone")
+            state.snapshot = original
+            state.snapshot.locationID = 2_097_152
+            controller.refreshLocalState()
+            expect(controller.canReturnToRealLocation, "a recovered Native journal must allow the same stable phone on a new USB connection")
+            controller.returnToRealLocation()
+            waitUntil(timeout: 3) { !controller.blocksDeviceMutation }
+            expect(stored.value == nil && !controller.reviewRequired, "Native Clear acknowledgement must resolve the recovered journal")
+            expect(state.preflightCount == 2 && state.reconnectConfirmationCount == 1, "recovered Native Clear must retain both Trust checks and changed-connection confirmation")
+            let log = try String(contentsOf: fixture.requestLog, encoding: .utf8)
+            let requests = log.split(separator: "\n")
+            expect(requests.count == 1 && requests[0].hasPrefix("clear-native|"), "recovered Native journals must send exactly one Native Clear and never DVT Clear")
+        } catch {
+            expect(false, "Native journal recovery fixture failed")
         }
     }
 

@@ -124,6 +124,8 @@ rsd_checksum="$(/usr/bin/shasum -a 256 "${packages_dir}/pymobiledevice3/remote/r
 /usr/bin/grep -Fq 'code="connection_lost", phase="transport"' "$bridge" || fail "transport loss reporting is missing"
 /usr/bin/grep -Fq 'command == "set-persistent"' "$bridge" || fail "one-shot persistent experiment is missing"
 /usr/bin/grep -Fq 'phase="persistentTeardown"' "$bridge" || fail "persistent teardown failure contract is missing"
+/usr/bin/grep -Fq 'NATIVE_TOOL_PATH = "/Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/Resources/bin/devicectl"' "$bridge" || fail "fixed native Mach-O path is missing"
+/usr/bin/grep -Fq '"=anchor apple"' "$bridge" || fail "Apple signature requirement is missing"
 if /usr/bin/grep -E 'enable_developer_mode|enable_developer_mode_post_restart|DEVELOPER_MODE_ENABLE|DEVELOPER_MODE_ACCEPT|retry_create_using_usbmux|mount_developer|mounter|autopair=True|start_tunnel_over_remotepairing|send_recv_plist' "$bridge" >/dev/null; then
   fail "a forbidden enable/reboot/DDI/pair/retry/raw-AMFI path is present"
 fi
@@ -133,6 +135,9 @@ import pathlib
 import sys
 
 tree = ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+native_helper = next((node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                      and node.name == "run_native_child"), None)
+spawn_calls = []
 for node in ast.walk(tree):
     if not isinstance(node, ast.Call):
         continue
@@ -144,9 +149,21 @@ for node in ast.walk(tree):
     if name in {
         "fork", "forkpty", "daemon", "setsid", "Popen",
         "enable_developer_mode", "enable_developer_mode_post_restart",
-        "retry_create_using_usbmux", "send_recv_plist",
+        "retry_create_using_usbmux", "send_recv_plist", "create_subprocess_shell",
     }:
         raise SystemExit(1)
+    if name == "create_subprocess_exec":
+        if native_helper is None or node not in list(ast.walk(native_helper)):
+            raise SystemExit(1)
+        if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Name) or node.func.value.id != "asyncio":
+            raise SystemExit(1)
+        if len(node.args) != 1 or not isinstance(node.args[0], ast.Starred) or not isinstance(node.args[0].value, ast.Name) or node.args[0].value.id != "argv":
+            raise SystemExit(1)
+        if any(keyword.arg == "shell" for keyword in node.keywords):
+            raise SystemExit(1)
+        spawn_calls.append(node)
+if len(spawn_calls) != 1:
+    raise SystemExit(1)
 PY
 
 # Exercise the set-persistent and reveal-only Developer Mode state machines with
@@ -207,7 +224,7 @@ line_count="$(print -r -- "$version_output" | /usr/bin/wc -l | /usr/bin/tr -d ' 
 import json, sys
 value = json.loads(sys.argv[1])
 assert value == {
-    "backend_version": "1.3.1",
+    "backend_version": "1.4.0",
     "event": "hello",
     "protocol": 1,
     "protocol_version": 1,

@@ -30,6 +30,8 @@ private enum VisualScenario: String, CaseIterable {
     case settings
     case mockLocationIdle = "mock-location-idle"
     case mockLocationWiFi = "mock-location-wifi"
+    case mockLocationNative = "mock-location-native"
+    case mockLocationNativePersistent = "mock-location-native-persistent"
     case mockLocationReview = "mock-location-review"
     case mockLocationPersistent = "mock-location-persistent"
 }
@@ -80,6 +82,9 @@ struct VisualTestMain {
         configure(model, for: scenario)
         if scenario == .mockLocationWiFi {
             model.mockLocationController.selectTransport(.wifi)
+        }
+        if scenario == .mockLocationNative {
+            model.mockLocationController.selectEngine(.appleNative)
         }
 
         let initialDestination = destination(for: scenario)
@@ -157,7 +162,7 @@ struct VisualTestMain {
         case .guides, .guidesMonitoring: return .guides
         case .logs, .operationFailed: return .logs
         case .settings: return .settings
-        case .mockLocationIdle, .mockLocationWiFi, .mockLocationReview, .mockLocationPersistent: return .mockLocation
+        case .mockLocationIdle, .mockLocationWiFi, .mockLocationNative, .mockLocationNativePersistent, .mockLocationReview, .mockLocationPersistent: return .mockLocation
         default: return nil
         }
     }
@@ -208,13 +213,13 @@ struct VisualTestMain {
             model.statusText = "Watching the connected iPhone for Recovery or DFU"
             model.detailText = "Follow the physical button sequence. You can stop the USB watcher from any page."
 
-        case .mockLocationIdle, .mockLocationWiFi:
+        case .mockLocationIdle, .mockLocationWiFi, .mockLocationNative:
             model.snapshot = genericMockLocationTargetFixture()
             model.deviceCenterSnapshot = DeviceCenterCollector.baseline(for: model.snapshot)
             model.statusText = "Normal iOS mode verified"
             model.detailText = "This iPhone model is eligible for an exact-target Mock Location developer-service check."
 
-        case .mockLocationReview, .mockLocationPersistent:
+        case .mockLocationReview, .mockLocationPersistent, .mockLocationNativePersistent:
             applyNormalFixture(to: model, productType: "iPhone12,8")
             model.statusText = "Normal iOS mode verified"
             model.detailText = "The original Mock Location target is trusted and communicating."
@@ -373,7 +378,7 @@ struct VisualTestMain {
     }
 
     private static func mockLocationController(for scenario: VisualScenario) -> MockLocationController {
-        guard scenario == .mockLocationReview || scenario == .mockLocationPersistent else {
+        guard scenario == .mockLocationReview || scenario == .mockLocationPersistent || scenario == .mockLocationNativePersistent else {
             return MockLocationController.offlineFixture()
         }
         let snapshot = normalTargetFixture()
@@ -381,12 +386,13 @@ struct VisualTestMain {
             return MockLocationController.offlineFixture()
         }
         let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
-        let isPersistent = scenario == .mockLocationPersistent
+        let isPersistent = scenario == .mockLocationPersistent || scenario == .mockLocationNativePersistent
         let record = MockLocationJournalRecord(
             state: isPersistent ? .assumedPersistent : .assumedActive,
             pin: target.pin,
             stablePin: target.stablePin,
             setMode: isPersistent ? .persistentUntilClearOrReboot : .liveSession,
+            engine: scenario == .mockLocationNativePersistent ? .appleNative : .dvt,
             requestDispatched: true,
             createdAt: timestamp,
             updatedAt: timestamp

@@ -7,10 +7,13 @@ or a developer service.
 
 import ast
 import asyncio
+import copy
 import importlib.util
+import io
 import json
 import os
 import pathlib
+import stat
 import sys
 from types import SimpleNamespace
 from typing import Optional
@@ -19,6 +22,7 @@ from typing import Optional
 TEST_UDID = "00008030-00123456789ABCDE"
 TEST_ECID = 0x123456789ABCDEF
 TEST_ECID_TEXT = "0x123456789ABCDEF"
+TEST_NATIVE_UUID = "33333333-4444-5555-6666-777777777777"
 
 
 class FakeMissingValueError(Exception):
@@ -331,6 +335,7 @@ def assert_no_process_spawning(bridge_path):
         "enable_developer_mode_post_restart",
         "retry_create_using_usbmux",
         "send_recv_plist",
+        "create_subprocess_shell",
     }
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -342,6 +347,18 @@ def assert_no_process_spawning(bridge_path):
         else:
             name = None
         assert name not in forbidden
+    children = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute) and node.func.attr == "create_subprocess_exec"]
+    assert len(children) == 1
+    helper = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                  and node.name == "run_native_child")
+    assert children[0] in list(ast.walk(helper))
+    assert isinstance(children[0].func.value, ast.Name) and children[0].func.value.id == "asyncio"
+    assert len(children[0].args) == 1 and isinstance(children[0].args[0], ast.Starred)
+    assert children[0].args[0].value.id == "argv"
+    assert not any(keyword.arg == "shell" for keyword in children[0].keywords)
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == "native_child_arguments" for node in ast.walk(helper))
 
 
 def assert_persistent_close_failure(module, request, trace, **fake_options):
@@ -689,6 +706,351 @@ def assert_wifi_contract(module, trace):
             if write_fd >= 0:
                 os.close(write_fd)
     asyncio.run(asyncio.wait_for(exercise_pipe(), timeout=1.0))
+
+
+def native_device_fixture():
+    hardware = {
+        "udid": TEST_UDID, "ecid": TEST_ECID, "productType": "iPhone12,8",
+        "deviceType": "iPhone", "platform": "iOS",
+    }
+    return {
+        "identifier": TEST_NATIVE_UUID,
+        "properties": {
+            "hardware": copy.deepcopy(hardware),
+            "connection": {"pairingState": "paired", "state": "connected", "transportType": "wired"},
+            "state": {"developerModeStatus": {"enabled": {"mode": "developer"}}},
+        },
+        "hardwareProperties": copy.deepcopy(hardware),
+        "connectionProperties": {"pairingState": "paired", "tunnelState": "connected", "transportType": "wired"},
+        "deviceProperties": {"developerModeStatus": "enabled", "ddiServicesAvailable": True},
+        "capabilities": [{"featureIdentifier": "com.apple.coredevice.feature.simulatelocation", "name": "Simulate Location"}],
+    }
+
+
+def fake_native_imports(module, trace, record=None, details=None, fail_action=None,
+                        tool_missing=False, stale_usb=False, action_result=None,
+                        expected_coordinates=(16.8409, 96.1735), **usb_options):
+    imports = fake_reveal_imports(trace, developer_mode_enabled=True, **usb_options)
+    selected = copy.deepcopy(record if record is not None else native_device_fixture())
+    detail = copy.deepcopy(details if details is not None else selected)
+    unrelated = native_device_fixture()
+    unrelated["identifier"] = "88888888-4444-5555-6666-777777777777"
+    unrelated["hardwareProperties"]["udid"] = "00008030-00123456789ABCDF"
+    unrelated["properties"]["hardware"]["udid"] = "00008030-00123456789ABCDF"
+    calls = []
+
+    class FakeTool:
+        async def verify(self):
+            trace.append("native-verify")
+            if tool_missing:
+                raise module.NativeToolUnavailableError("private tool failure")
+
+        async def request(self, action, arguments=()):
+            trace.append("native-" + action)
+            calls.append((action, arguments))
+            if action == fail_action:
+                raise module.NativeCommandError("private native failure " + TEST_UDID)
+            if action == "list":
+                assert arguments == ()
+                return {"devices": [unrelated, copy.deepcopy(selected)]}
+            if action == "details":
+                assert arguments == (TEST_NATIVE_UUID,)
+                return copy.deepcopy(detail)
+            if action == "set":
+                assert arguments[0] == TEST_NATIVE_UUID and len(arguments) == 3
+                assert (float(arguments[1]), float(arguments[2])) == expected_coordinates
+                module.native_child_arguments("set", arguments)
+            elif action == "clear":
+                assert arguments == (TEST_NATIVE_UUID,)
+            else:
+                raise AssertionError("unallowlisted native action")
+            return copy.deepcopy(action_result if action_result is not None else {"deviceIdentifier": TEST_NATIVE_UUID})
+
+    original_open = imports.create_using_usbmux
+    usb_opens = 0
+    async def open_usb(**kwargs):
+        nonlocal usb_opens
+        usb_opens += 1
+        lockdown = await original_open(**kwargs)
+        if stale_usb and usb_opens == 2:
+            return SimpleNamespace(
+                udid=TEST_UDID, product_type="iPhone12,8", ecid=TEST_ECID + 1,
+                paired=True, product_version="27.3", service=lockdown.service,
+                close=lockdown.close, get_developer_mode_status=lockdown.get_developer_mode_status,
+            )
+        return lockdown
+    imports.create_using_usbmux = open_usb
+    imports.NativeLocationTool = FakeTool
+    imports.native_calls = calls
+    return imports
+
+
+def assert_native_state_machine(module, trace):
+    identity = {"udid": TEST_UDID, "expectedProductType": "iPhone12,8", "expectedECID": TEST_ECID_TEXT}
+    for command in ("probe-native", "set-native-persistent", "clear-native"):
+        request = dict(identity)
+        if command == "set-native-persistent":
+            request.update(latitude="16.8409", longitude="96.1735")
+        trace.clear()
+        imports = fake_native_imports(module, trace)
+        status, events = run_captured(module, module.execute(command, request, imports))
+        assert status == 0, (command, events)
+        expected_events = ["hello", "attested", "ready"]
+        if command != "probe-native":
+            expected_events += ["requestDispatched", "active" if command == "set-native-persistent" else "clearSent"]
+        assert [event["event"] for event in events] == expected_events
+        assert events[0]["backend_version"] == "1.4.0"
+        if command == "set-native-persistent":
+            assert events[-1]["status"] == "assumedActive" and events[-1]["persistence"] == "experimental"
+        assert trace.count("lockdown-open") == 2 and trace.count("lockdown-close") == 2
+        assert trace.count("developer-mode-status") == 2
+        assert trace.count("native-list") == 1 and trace.count("native-details") == 1
+        assert trace.index("native-details") < len(trace) - 1 - trace[::-1].index("lockdown-open")
+        assert trace.count("native-set") == (1 if command == "set-native-persistent" else 0)
+        assert trace.count("native-clear") == (1 if command == "clear-native" else 0)
+        assert "dvt-init" not in trace and "tunnel-init" not in trace and "amfi-reveal" not in trace
+        serialized = json.dumps(events)
+        for secret in (TEST_UDID, TEST_ECID_TEXT, TEST_NATIVE_UUID, "16.8409", "96.1735"):
+            assert secret not in serialized
+
+    set_request = dict(identity, latitude="16.8409", longitude="96.1735")
+    for latitude, longitude in (("0.0000001", "-0.0000002"), (module.Decimal("1e-100"), module.Decimal("-1e-100"))):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "set-native-persistent", dict(identity, latitude=latitude, longitude=longitude),
+            fake_native_imports(module, trace, expected_coordinates=(float(latitude), float(longitude))),
+        ))
+        assert status == 0 and events[-1]["event"] == "active"
+    # Every disagreement, including modern/legacy disagreement, stops before
+    # readiness or a device mutation. Do not choose the first named phone.
+    modifications = (
+        lambda row: row["properties"]["hardware"].update(ecid=TEST_ECID + 1),
+        lambda row: row["hardwareProperties"].update(productType="iPhone15,2"),
+        lambda row: row["hardwareProperties"].update(ecid=True),
+        lambda row: row["hardwareProperties"].update(ecid=str(TEST_ECID)),
+        lambda row: row["hardwareProperties"].update(ecid=float(TEST_ECID)),
+        lambda row: row["properties"]["connection"].update(pairingState="unpaired"),
+        lambda row: row["connectionProperties"].update(tunnelState="disconnected"),
+        lambda row: row["properties"]["connection"].update(transportType="wireless"),
+        lambda row: row.update(identifier="iPhone name"),
+    )
+    for modify in modifications:
+        record = native_device_fixture()
+        modify(record)
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "set-native-persistent", set_request, fake_native_imports(module, trace, record=record),
+        ))
+        assert status != 0 and events[-1]["event"] == "error"
+        assert "native-set" not in trace and "event:ready" not in trace
+
+    for option in ({"paired": False}, {"reported_ecid": TEST_ECID + 1}, {"stale_usb": True}, {"tool_missing": True}):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "set-native-persistent", set_request, fake_native_imports(module, trace, **option),
+        ))
+        assert status != 0 and "native-set" not in trace and "event:ready" not in trace
+        if option.get("tool_missing"):
+            assert events[-1]["code"] == "native_tool_unavailable" and "native-list" not in trace
+
+    for detail_change in (
+        lambda row: row.update(identifier="99999999-4444-5555-6666-777777777777"),
+        lambda row: row.update(capabilities=[]),
+        lambda row: row["properties"]["hardware"].update(ecid=TEST_ECID + 1),
+    ):
+        details = native_device_fixture()
+        detail_change(details)
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "set-native-persistent", set_request, fake_native_imports(module, trace, details=details),
+        ))
+        assert status != 0 and "native-set" not in trace and "event:ready" not in trace
+
+    duplicate = native_device_fixture()
+    try:
+        module.select_native_target({"devices": [duplicate, copy.deepcopy(duplicate)]}, TEST_UDID, "iPhone12,8", TEST_ECID)
+        raise AssertionError("ambiguous native mapping accepted")
+    except module.TargetMismatchError:
+        pass
+    trace.clear()
+    status, events = run_captured(module, module.execute(
+        "set-native-persistent", set_request, fake_native_imports(
+            module, trace, action_result={"deviceIdentifier": "99999999-4444-5555-6666-777777777777"},
+        ),
+    ))
+    assert status == 3 and events[-1]["code"] == "target_mismatch"
+    assert trace.count("native-set") == 1 and "native-clear" not in trace
+    assert all(event["event"] != "active" for event in events)
+
+    # CLI failure after dispatch causes exactly one action attempt, no fallback
+    # DVT session and no unsolicited Clear or retry.
+    for command, action, request in (
+        ("set-native-persistent", "set", set_request), ("clear-native", "clear", identity),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            command, request, fake_native_imports(module, trace, fail_action=action),
+        ))
+        assert status == 4 and events[-1]["event"] == "error"
+        assert trace.count("native-" + action) == 1
+        assert trace.index("event:requestDispatched") < trace.index("native-" + action)
+        assert all(event["event"] not in ("active", "clearSent") for event in events)
+        assert "tunnel-init" not in trace and "dvt-init" not in trace
+        assert "private native failure" not in json.dumps(events) and TEST_UDID not in json.dumps(events)
+
+    for command, request in (
+        ("probe-native", {"udid": TEST_UDID, "expectedProductType": "iPhone12,8"}),
+        ("probe-native", dict(identity, transport="usb")),
+        ("clear-native", dict(identity, command="clear")),
+        ("set-native-persistent", dict(set_request, latitude="NaN")),
+        ("set-native-persistent", dict(set_request, expectedECID="0x0")),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(command, request, fake_native_imports(module, trace)))
+        assert status == 2 and events[-1]["code"] == "invalid_request"
+        assert trace == ["event:error"]
+
+
+def assert_native_tool_boundaries(module):
+    original_child = module.run_native_child
+    original_file_valid = module.native_tool_file_valid
+    calls = []
+    response = [0, b'{"info":{"outcome":"success","jsonVersion":5},"result":{}}', b"private stderr"]
+    async def fake_child(action, arguments=()):
+        calls.append((action, arguments))
+        return tuple(response)
+    module.run_native_child = fake_child
+    module.native_tool_file_valid = lambda: True
+    async def exercise():
+        tool = module.NativeLocationTool()
+        await tool.verify()
+        assert calls == [("verify", ())]
+        assert await tool.request("list") == {}
+        for output in (
+            b"private malformed JSON", b"\xff", b'[]', b'{"info":null,"result":{}}',
+            b'{"info":{"outcome":"failure"},"result":{}}',
+            b'{"info":{"outcome":"success"},"result":[]}',
+            b'{"info":{"outcome":"success"},"result":{},"error":{}}',
+        ):
+            response[1] = output
+            try:
+                await tool.request("list")
+                raise AssertionError("invalid native JSON accepted")
+            except module.NativeSchemaError:
+                pass
+        response[0] = 1
+        try:
+            await tool.verify()
+            raise AssertionError("failed Apple signature accepted")
+        except module.NativeToolUnavailableError:
+            pass
+        module.native_tool_file_valid = lambda: False
+        calls.clear()
+        try:
+            await tool.verify()
+            raise AssertionError("missing native tool accepted")
+        except module.NativeToolUnavailableError:
+            pass
+        assert calls == []
+    try:
+        asyncio.run(exercise())
+    finally:
+        module.run_native_child = original_child
+        module.native_tool_file_valid = original_file_valid
+
+    assert module.native_child_arguments("verify", ()) == (
+        "/usr/bin/codesign", "--verify", "--strict", "-R", "=anchor apple", module.NATIVE_TOOL_PATH,
+    )
+    assert module.native_child_arguments("set", (TEST_NATIVE_UUID, "16.8409", "96.1735"))[0] == module.NATIVE_TOOL_PATH
+    for action, arguments in (("pair", ()), ("clear", ("iPhone",)),
+                              ("set", (TEST_NATIVE_UUID, "$(private)", "1")), ("verify", ("--deep",))):
+        try:
+            module.native_child_arguments(action, arguments)
+            raise AssertionError("unallowlisted child arguments accepted")
+        except module.NativeSchemaError:
+            pass
+
+    original_path = module.Path
+    metadata_value = SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o755)
+    parent_metadata = SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o755)
+    magic = [b"\xcf\xfa\xed\xfe"]
+    parent = SimpleNamespace(lstat=lambda: parent_metadata)
+    tool_path = SimpleNamespace(parents=(parent,), lstat=lambda: metadata_value,
+                                open=lambda mode: io.BytesIO(magic[0]))
+    module.Path = lambda value: tool_path
+    try:
+        assert module.native_tool_file_valid()
+        for uid, mode, header in (
+            (501, stat.S_IFREG | 0o755, b"\xcf\xfa\xed\xfe"),
+            (0, stat.S_IFREG | 0o777, b"\xcf\xfa\xed\xfe"),
+            (0, stat.S_IFLNK | 0o755, b"\xcf\xfa\xed\xfe"),
+            (0, stat.S_IFREG | 0o644, b"\xcf\xfa\xed\xfe"),
+            (0, stat.S_IFREG | 0o755, b"#!/b"),
+        ):
+            metadata_value.st_uid, metadata_value.st_mode, magic[0] = uid, mode, header
+            assert not module.native_tool_file_valid()
+        metadata_value.st_uid, metadata_value.st_mode, magic[0] = 0, stat.S_IFREG | 0o755, b"\xcf\xfa\xed\xfe"
+        parent_metadata.st_mode = stat.S_IFDIR | 0o777
+        assert not module.native_tool_file_valid()
+    finally:
+        module.Path = original_path
+
+
+def assert_native_child_capture(module):
+    original_spawn = module.asyncio.create_subprocess_exec
+    original_timeout = module.NATIVE_PROCESS_TIMEOUT_SECONDS
+    original_limit = module.NATIVE_OUTPUT_LIMIT
+    original_home = os.environ.get("HOME")
+    calls = []
+    mode = ["normal"]
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
+            self.done = asyncio.Event()
+            self.stdout.feed_data(b"x" * (256 if mode[0] == "oversize" else 4))
+            if mode[0] != "timeout":
+                self.stdout.feed_eof()
+                self.stderr.feed_eof()
+            if mode[0] == "normal":
+                self.returncode = 0
+                self.done.set()
+        async def wait(self):
+            await self.done.wait()
+            return self.returncode
+        def kill(self):
+            calls.append("kill")
+            self.returncode = -9
+            self.done.set()
+    async def spawn(*args, **kwargs):
+        calls.append("spawn")
+        assert args == module.native_child_arguments("list", ())
+        assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
+        assert kwargs["cwd"] == "/"
+        assert "HOME" not in kwargs["env"] and "DEVELOPER_DIR" not in kwargs["env"]
+        assert all(not key.startswith(("XDG_", "DYLD_", "PYTHON")) for key in kwargs["env"])
+        return FakeProcess()
+    module.asyncio.create_subprocess_exec = spawn
+    module.NATIVE_PROCESS_TIMEOUT_SECONDS = 0.01
+    module.NATIVE_OUTPUT_LIMIT = 128
+    async def exercise():
+        assert await module.run_native_child("list") == (0, b"xxxx", b"")
+        for failure in ("oversize", "timeout"):
+            calls.clear()
+            mode[0] = failure
+            try:
+                await module.run_native_child("list")
+                raise AssertionError("unbounded native capture accepted")
+            except (module.NativeCommandError, asyncio.TimeoutError):
+                pass
+            assert calls == ["spawn", "kill"]
+    try:
+        asyncio.run(exercise())
+        assert os.environ.get("HOME") == original_home
+    finally:
+        module.asyncio.create_subprocess_exec = original_spawn
+        module.NATIVE_PROCESS_TIMEOUT_SECONDS = original_timeout
+        module.NATIVE_OUTPUT_LIMIT = original_limit
 
 
 def assert_ecid_integer_subclasses(module, trace):
@@ -1278,10 +1640,13 @@ def main():
     assert_wifi_contract(module, trace)
     assert_ecid_integer_subclasses(module, trace)
     assert_initially_missing_wifi_flag(module, trace)
+    assert_native_state_machine(module, trace)
+    assert_native_tool_boundaries(module)
+    assert_native_child_capture(module)
     if len(sys.argv) == 3:
         assert_patched_tunnel_source(pathlib.Path(sys.argv[2]))
 
-    print("LOCATION BACKEND OFFLINE GENERIC-IPHONE + PERSISTENT + DEVELOPER-MODE + WIFI TEST PASS")
+    print("LOCATION BACKEND OFFLINE GENERIC-IPHONE + PERSISTENT + DEVELOPER-MODE + WIFI + NATIVE TEST PASS")
 
 
 if __name__ == "__main__":
