@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 
 
 PROTOCOL_VERSION = 1
-BACKEND_VERSION = "1.3.0"
+BACKEND_VERSION = "1.3.1"
 PINNED_PYMOBILEDEVICE3_VERSION = "10.9.0"
 MINIMUM_IOS = (17, 4)
 MAX_REQUEST_BYTES = 4096
@@ -190,6 +190,7 @@ class BackendImports:
             DeviceNotFoundError,
             DvtException,
             InvalidServiceError,
+            MissingValueError,
             NoDeviceConnectedError,
             NotPairedError,
             NotTrustedError,
@@ -224,6 +225,7 @@ class BackendImports:
         self.userspace_errors = (UserspaceTunnelUnavailableError,)
         self.developer_mode_errors = (DeveloperModeIsNotEnabledError,)
         self.invalid_service_errors = (InvalidServiceError,)
+        self.missing_value_errors = (MissingValueError,)
         self.amfi_errors = (StartServiceError, PyMobileDevice3Exception)
         self.device_busy_errors = (DeviceAlreadyInUseError,)
         self.connection_errors = (ConnectionFailedError, ConnectionTerminatedError, DvtException)
@@ -332,7 +334,11 @@ def attest_identity(target: Any, udid: str, product_type: str, ecid: Optional[in
     if ecid is not None:
         try:
             reported_ecid = getattr(target, "ecid")
-            if type(reported_ecid) is not int or reported_ecid != ecid:
+            if (
+                not isinstance(reported_ecid, int)
+                or isinstance(reported_ecid, bool)
+                or int(reported_ecid) != ecid
+            ):
                 raise TargetMismatchError()
         except (AttributeError, TypeError, ValueError, KeyError):
             raise TargetMismatchError() from None
@@ -537,9 +543,14 @@ async def enable_wifi(
         )
         emit("attested", "ok", product_type=expected_product_type)
         phase = "wifiSetup"
-        enabled = await asyncio.wait_for(
-            lockdown.get_enable_wifi_connections(), timeout=SERVICE_TIMEOUT_SECONDS,
-        )
+        try:
+            enabled = await asyncio.wait_for(
+                lockdown.get_enable_wifi_connections(), timeout=SERVICE_TIMEOUT_SECONDS,
+            )
+        except imports.missing_value_errors:
+            # An unset key permits the explicitly confirmed first enable write.
+            # Only the initial read has this exception; readback must succeed.
+            enabled = False
         emit("requestDispatched", "working")
         if enabled is not True:
             await asyncio.wait_for(

@@ -8,7 +8,7 @@ upstream error text, tracebacks, and pairing records are never returned.
 
 Protocol version: `1`
 
-Backend version: `1.3.0`
+Backend version: `1.3.1`
 
 The backend accepts any syntactically valid iPhone ProductType rather than a
 model allowlist. `expectedProductType` is the exact ProductType freshly read
@@ -50,6 +50,9 @@ checks its actual mux transport, UDID, ProductType, ECID, existing pairing, and
 supported OS, and closes it. The tunnel independently forces Network and checks
 its pairing and actual mux transport before starting CoreDeviceProxy. Its RSD
 must agree on UDID, ProductType, and ECID before opening the DVT location channel.
+ECID attestation accepts Python integers and the SDK's signed/unsigned RemoteXPC
+integer subclasses, compares their integer values, and rejects booleans,
+floating-point values, and strings.
 Any mismatch stops without sending a location request. The patched upstream
 source and its modification notice accompany the payload.
 
@@ -68,6 +71,13 @@ the flag is true. This acknowledges the setting, not network
 discovery or a working developer tunnel. It never opens DVT, reveals/enables
 Developer Mode, pairs, or retries. The trusted iPhone must later appear as
 `Network` in Apple usbmuxd and stay reachable from this Mac on the same network.
+
+An initial `MissingValueError` for that flag is treated as an unset key: after
+the existing exact-target confirmation, `enable-wifi` may send its one enable
+write. No other initial read error permits a write. After writing, the getter
+must return true; missing/false/failing readback emits an error and never
+`wifiEnabled`. Neither the getter nor setter is automatically retried, and
+upstream exception details remain private.
 
 `set-persistent` remains a separate USB-only experiment. It rejects transport
 fields, including Wi-Fi: keeping a live Wi-Fi session is not phone-side

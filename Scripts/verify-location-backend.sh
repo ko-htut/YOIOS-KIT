@@ -207,7 +207,7 @@ line_count="$(print -r -- "$version_output" | /usr/bin/wc -l | /usr/bin/tr -d ' 
 import json, sys
 value = json.loads(sys.argv[1])
 assert value == {
-    "backend_version": "1.3.0",
+    "backend_version": "1.3.1",
     "event": "hello",
     "protocol": 1,
     "protocol_version": 1,

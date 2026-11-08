@@ -21,6 +21,18 @@ TEST_ECID = 0x123456789ABCDEF
 TEST_ECID_TEXT = "0x123456789ABCDEF"
 
 
+class FakeMissingValueError(Exception):
+    pass
+
+
+class FakeXpcUInt64Type(int):
+    pass
+
+
+class FakeXpcInt64Type(int):
+    pass
+
+
 def load_bridge(path):
     saved_stdout = os.dup(1)
     saved_stderr = os.dup(2)
@@ -199,6 +211,8 @@ def fake_reveal_imports(
     wifi_enabled=False,
     wifi_error=None,
     wifi_setting_sticks=True,
+    wifi_initial_read_error=None,
+    wifi_readback_error=None,
 ):
     class FakeLockdown:
         udid = reported_udid
@@ -210,6 +224,7 @@ def fake_reveal_imports(
             self.product_version = product_version
             self.service = SimpleNamespace(mux_device=SimpleNamespace(connection_type="USB"))
             self.wifi_enabled = wifi_enabled
+            self.wifi_status_reads = 0
 
         @property
         def ecid(self):
@@ -224,6 +239,10 @@ def fake_reveal_imports(
 
         async def get_enable_wifi_connections(self):
             trace.append("wifi-status")
+            self.wifi_status_reads += 1
+            error = wifi_initial_read_error if self.wifi_status_reads == 1 else wifi_readback_error
+            if error is not None:
+                raise error
             return self.wifi_enabled
 
         async def set_enable_wifi_connections(self, value):
@@ -270,6 +289,7 @@ def fake_reveal_imports(
         unlock_errors = ()
         pairing_errors = ()
         invalid_service_errors = ()
+        missing_value_errors = (FakeMissingValueError,)
         amfi_errors = ()
         connection_errors = ()
         userspace_errors = ()
@@ -669,6 +689,145 @@ def assert_wifi_contract(module, trace):
             if write_fd >= 0:
                 os.close(write_fd)
     asyncio.run(asyncio.wait_for(exercise_pipe(), timeout=1.0))
+
+
+def assert_ecid_integer_subclasses(module, trace):
+    request = {
+        "udid": TEST_UDID, "expectedProductType": "iPhone12,8",
+        "expectedECID": TEST_ECID_TEXT, "transport": "wifi",
+    }
+    # RemoteXPC decodes uint64 ECIDs into an int subclass; USB plist uses int.
+    # Both representations must attest to the same exact numeric identity.
+    for reported_ecid, lockdown_ecid in (
+        (FakeXpcUInt64Type(TEST_ECID), TEST_ECID),
+        (TEST_ECID, FakeXpcUInt64Type(TEST_ECID)),
+        (FakeXpcUInt64Type(TEST_ECID), FakeXpcUInt64Type(TEST_ECID)),
+        (FakeXpcInt64Type(TEST_ECID), TEST_ECID),
+        (TEST_ECID, FakeXpcInt64Type(TEST_ECID)),
+        (FakeXpcInt64Type(TEST_ECID), FakeXpcInt64Type(TEST_ECID)),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "probe", request, fake_imports(
+                trace, transport="wifi", product_version="27.3",
+                reported_ecid=reported_ecid, lockdown_ecid=lockdown_ecid,
+            ),
+        ))
+        assert status == 0 and events[-1]["event"] == "ready"
+        assert trace.count("tunnel-open") == 1 and trace.count("dvt-connect") == 1
+        assert "location-set" not in trace and "FORBIDDEN-clear" not in trace
+        assert TEST_UDID not in json.dumps(events) and TEST_ECID_TEXT not in json.dumps(events)
+
+    # An integer subclass with a different value is still the wrong device,
+    # whether the disagreement is reported by Network lockdown or by RSD.
+    for reported_ecid, lockdown_ecid, tunnel_opened in (
+        (FakeXpcUInt64Type(TEST_ECID + 1), TEST_ECID, True),
+        (TEST_ECID, FakeXpcUInt64Type(TEST_ECID + 1), False),
+        (FakeXpcInt64Type(TEST_ECID + 1), TEST_ECID, True),
+        (TEST_ECID, FakeXpcInt64Type(TEST_ECID + 1), False),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "probe", request, fake_imports(
+                trace, transport="wifi", reported_ecid=reported_ecid, lockdown_ecid=lockdown_ecid,
+            ),
+        ))
+        assert status == 3 and events[-1]["code"] == "target_mismatch"
+        assert ("tunnel-open" in trace) is tunnel_opened
+        assert "dvt-init" not in trace and "location-set" not in trace
+
+    # These inputs deliberately compare numerically equal after coercion, so
+    # they prove type rejection rather than merely a different ECID value.
+    for raw_ecid, expected in ((True, 1), (False, 0), (12345.0, 12345), ("12345", 12345)):
+        target = SimpleNamespace(udid=TEST_UDID, product_type="iPhone12,8", ecid=raw_ecid)
+        try:
+            module.attest_identity(target, TEST_UDID, "iPhone12,8", expected)
+            raise AssertionError("non-integer ECID accepted")
+        except module.TargetMismatchError:
+            pass
+
+
+def assert_initially_missing_wifi_flag(module, trace):
+    request = {
+        "udid": TEST_UDID, "expectedProductType": "iPhone12,8",
+        "expectedECID": TEST_ECID_TEXT,
+    }
+    private_detail = "private unset flag " + TEST_UDID + " " + TEST_ECID_TEXT
+
+    # A first-time missing key is the sole read failure that permits the one
+    # already-confirmed write. Success still requires the second read to be true.
+    trace.clear()
+    status, events = run_captured(module, module.execute(
+        "enable-wifi", request, fake_reveal_imports(
+            trace, product_version="27.3",
+            wifi_initial_read_error=FakeMissingValueError(private_detail),
+        ),
+    ))
+    assert status == 0
+    assert [event["event"] for event in events] == [
+        "hello", "attested", "requestDispatched", "wifiEnabled",
+    ]
+    assert trace.count("wifi-enable") == 1 and trace.count("wifi-status") == 2
+    assert trace.count("lockdown-open") == 1 and trace.count("lockdown-close") == 1
+    assert trace.index("wifi-status") < trace.index("event:requestDispatched") < trace.index("wifi-enable")
+    assert trace.index("wifi-enable") < len(trace) - 1 - trace[::-1].index("wifi-status")
+    assert all(secret not in json.dumps(events) for secret in (private_detail, TEST_UDID, TEST_ECID_TEXT))
+
+    # Missing readback is not treated as another unset first read, and never
+    # causes a second setter. Other readback errors and false readback fail too.
+    for initial_missing in (False, True):
+        for readback_error, sticks in (
+            (FakeMissingValueError(private_detail), True),
+            (OSError(private_detail), True),
+            (asyncio.TimeoutError(private_detail), True),
+            (None, False),
+        ):
+            trace.clear()
+            status, events = run_captured(module, module.execute(
+                "enable-wifi", request, fake_reveal_imports(
+                    trace,
+                    wifi_initial_read_error=FakeMissingValueError(private_detail) if initial_missing else None,
+                    wifi_readback_error=readback_error, wifi_setting_sticks=sticks,
+                ),
+            ))
+            assert status == 4 and events[-1]["phase"] == "wifiSetup"
+            assert trace.count("wifi-enable") == 1 and trace.count("wifi-status") == 2
+            assert trace.count("lockdown-open") == 1 and trace.count("lockdown-close") == 1
+            assert all(event["event"] != "wifiEnabled" for event in events)
+            assert all(secret not in json.dumps(events) for secret in (private_detail, TEST_UDID, TEST_ECID_TEXT))
+
+    # Every other initial read error must fail before dispatch or any write.
+    for initial_error in (
+        OSError(private_detail), RuntimeError(private_detail),
+        asyncio.TimeoutError(private_detail), PermissionError(private_detail),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "enable-wifi", request,
+            fake_reveal_imports(trace, wifi_initial_read_error=initial_error),
+        ))
+        assert status == 4 and events[-1]["phase"] == "wifiSetup"
+        assert trace.count("wifi-status") == 1 and "wifi-enable" not in trace
+        assert trace.count("lockdown-open") == 1 and trace.count("lockdown-close") == 1
+        assert all(event["event"] not in ("requestDispatched", "wifiEnabled") for event in events)
+        assert private_detail not in json.dumps(events)
+
+    # A missing initial value never weakens exact identity or Trust preflight.
+    for options, expected_code in (
+        ({"paired": False}, "pairing_required"),
+        ({"reported_ecid": TEST_ECID + 1}, "target_mismatch"),
+        ({"reported_udid": "00008030-00123456789ABCDF"}, "target_mismatch"),
+        ({"reported_product_type": "iPhone15,2"}, "target_mismatch"),
+    ):
+        trace.clear()
+        status, events = run_captured(module, module.execute(
+            "enable-wifi", request, fake_reveal_imports(
+                trace, wifi_initial_read_error=FakeMissingValueError(private_detail), **options,
+            ),
+        ))
+        assert status == 3 and events[-1]["code"] == expected_code
+        assert "wifi-status" not in trace and "wifi-enable" not in trace
+        assert "amfi-reveal" not in trace and "dvt-init" not in trace
 
 
 def assert_patched_tunnel_source(source_path):
@@ -1117,6 +1276,8 @@ def main():
 
     assert_generic_iphone_targets(module, trace)
     assert_wifi_contract(module, trace)
+    assert_ecid_integer_subclasses(module, trace)
+    assert_initially_missing_wifi_flag(module, trace)
     if len(sys.argv) == 3:
         assert_patched_tunnel_source(pathlib.Path(sys.argv[2]))
 
