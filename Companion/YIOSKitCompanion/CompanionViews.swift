@@ -3,7 +3,7 @@ import MapKit
 import SwiftUI
 import UIKit
 
-private enum CompanionTab: Hashable { case map, places, help }
+private enum CompanionTab: Hashable { case map, places, mockLocation, help }
 
 struct CompanionRootView: View {
     @State private var tab: CompanionTab = .map
@@ -16,6 +16,9 @@ struct CompanionRootView: View {
             SavedPlacesView(onExplore: { tab = .map })
                 .tabItem { Label("Saved", systemImage: "bookmark") }
                 .tag(CompanionTab.places)
+            CompanionMockLocationView()
+                .tabItem { Label("Mock Location", systemImage: "location.viewfinder") }
+                .tag(CompanionTab.mockLocation)
             CompanionHelpView()
                 .tabItem { Label("Companion", systemImage: "iphone.and.arrow.forward") }
                 .tag(CompanionTab.help)
@@ -278,9 +281,15 @@ private struct CompanionHelpView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Mock Location") {
+#if targetEnvironment(simulator)
+                    Label("Test in the Mock Location tab", systemImage: "location.viewfinder")
+                    Text("An explicitly configured local Mac bridge can change this simulator's system location. The app verifies the result using a fresh Core Location sample. The simulator test does not enable the same feature on a physical iPhone.")
+                        .font(.footnote).foregroundStyle(.secondary)
+#else
                     Label("Use YIOS-KIT on your Mac", systemImage: "location.viewfinder")
                     Text("The map in this app is a preview. This version cannot set or resume a system-wide simulated location. Installing the companion does not preserve a Mock Location session through an iPhone restart.")
                         .font(.footnote).foregroundStyle(.secondary)
+#endif
                 }
                 Section("Privacy") {
                     LabeledContent("Location access", value: location.permissionLabel)

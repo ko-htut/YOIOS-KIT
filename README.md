@@ -72,7 +72,7 @@ manual backup handoff.
 
 ## iPhone Companion
 
-The separate native iPhone project lives in [Companion](Companion/README.md). It requires iOS 17 or later and does not include a developer tunnel, system-wide GPS override, or automatic location replay after reboot. Saved places remain local to that app; installing it does not transfer Mac pairing secrets or start location tracking.
+The separate native iPhone project lives in [Companion](Companion/README.md). It requires iOS 17 or later. The physical-phone build does not include a developer tunnel, system-wide GPS override, or automatic location replay after reboot. Saved places remain local to that app; installing it does not transfer Mac pairing secrets or start location tracking. The simulator build separately includes a Mock Location test workspace backed by an authenticated Mac loopback bridge and Apple's exact-target simulator tool, with fresh Core Location readback. See the Companion guide for its launcher and actual simulator UI checks.
 
 Build the simulator app with `Scripts/build-companion.sh --simulator`. For a phone, select your own signing team and build with `Scripts/build-companion.sh --device --team YOUR_TEAM_ID`; explicitly add `--allow-provisioning-updates` when Xcode needs to create/update the app's development profile. Signing uses the account already configured in Xcode, and YIOS-KIT never asks for its password. Free Personal Team profiles expire after seven days; rebuild the signed Companion and Mac app to renew them.
 
