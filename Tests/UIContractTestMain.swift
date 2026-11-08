@@ -1264,7 +1264,7 @@ struct UIContractTestMain {
         }
 
         let bindings = [
-            ".disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.crashCopyReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter || model.mockLocationController.isBusy)",
+            ".disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.crashCopyReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter || model.mockLocationController.isBusy || model.companionController.isBusy)",
             ".disabled(!model.canRefreshDeviceCenter)",
             ".disabled(!model.canUseNormalDeviceUtilities)",
             ".disabled(!model.canOpenFinderBackup)",

@@ -6,6 +6,7 @@ A native, Apple-silicon macOS app for source-attributed iPhone inspection and re
 
 - Uses one grouped sidebar for all eleven screens, a current-page breadcrumb, clear page headings, and a shared light/dark visual system. Dashboard, device details, reports, history, Recovery, DFU / Restore, Mock Location, tools, guides, logs, and settings each focus on their own task. Cards and controls adapt to compact and wide windows.
 - Includes a **Dependency Doctor** that reports the exact built-in tool source/version, optional installed fallback, and which capabilities are ready. A complete built-in suite is always preferred; tools from different installations are never mixed within one capability.
+- Includes a separate **YIOS-KIT Companion** iPhone app with a map, local saved places, and setup guidance. With a signed device build embedded, the Mac app automatically checks one trusted USB iPhone and installs a missing or newer Companion while idle. Settings provides an automatic-install switch and an explicit same-version repair action.
 - Adds a **Backup Center** in More Tools that hands control to Finder. The app does not automate, start, observe, or claim completion of a backup and never asks for a backup password.
 - Adds an explicit, exact-target **Crash & Panic Reports** copy workflow. It requires one supported, trusted iPhone in Normal iOS, creates a new local folder with verified private permissions, always uses `idevicecrashreport --keep`, never requests deletion, never uploads through this app, and never retries automatically.
 - Adds a bounded, structured **USB & Recovery Timeline** for the current app session. It records observed mode/PID transitions and this app's Apple-operation events without scraping iPhone syslog or inferring cable/hardware failure.
@@ -68,6 +69,16 @@ Restore, or Factory Reset. Device inspection, Recovery/DFU verification,
 Normal-to-Recovery transition, guarded restart/shutdown, and crash-report copy
 use the built-in toolchain without Configurator. Finder remains the official
 manual backup handoff.
+
+## iPhone Companion
+
+The separate native iPhone project lives in [Companion](Companion/README.md). It requires iOS 17 or later and does not include a developer tunnel, system-wide GPS override, or automatic location replay after reboot. Saved places remain local to that app; installing it does not transfer Mac pairing secrets or start location tracking.
+
+Build the simulator app with `Scripts/build-companion.sh --simulator`. For a phone, select your own signing team and build with `Scripts/build-companion.sh --device --team YOUR_TEAM_ID`; explicitly add `--allow-provisioning-updates` when Xcode needs to create/update the app's development profile. Signing uses the account already configured in Xcode, and YIOS-KIT never asks for its password. Free Personal Team profiles expire after seven days; rebuild the signed Companion and Mac app to renew them.
+
+`build-app.sh` automatically embeds a verified signed device build from `build/Companion/Device/YIOS-KIT Companion.app`. `YIOS_COMPANION_APP` can explicitly select another verified device build. Simulator payloads, expired profiles, and wrong bundle identities are rejected. The nested iOS app keeps its own signature. A Mac-only build without a signed payload remains usable and shows the signing setup requirement in Settings.
+
+With **Settings → YIOS-KIT Companion → Install automatically when an iPhone connects** enabled (the default), YIOS-KIT watches USB changes while open, obtains fresh exact iPhone identity and Trust evidence, validates that the app profile covers that phone, and checks Apple's installed-app inventory. It installs only when missing or older; a current or newer build is left in place. **Install / Repair Companion** explicitly reinstalls the same build when needed, without downgrading a newer build. No phone app is uninstalled or automatically launched. Failed/uncertain installation is not automatically retried on the same observed connection. Recovery, DFU, another active workflow, or a Mock Location reset obligation pauses installation; it never clears those states automatically.
 
 ## Use
 

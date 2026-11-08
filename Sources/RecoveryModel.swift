@@ -146,8 +146,15 @@ final class RecoveryModel: ObservableObject {
     private var deviceCenterGeneration = UUID()
     private var firmwareValidationGeneration = UUID()
     let mockLocationController: MockLocationController
+    let companionController: CompanionController
     private let recoveryTransitionDependencies: RecoveryTransitionDependencies
     private var mockLocationObservation: AnyCancellable?
+    private var companionObservation: AnyCancellable?
+    private var companionGateObservation: AnyCancellable?
+    private var companionConnectionTimer: DispatchSourceTimer?
+    private let companionConnectionQueue = DispatchQueue(label: "local.minthanhtut.YIOSKit.companionUSB", qos: .utility)
+    private var companionUSBChangePending = false
+    private var companionPrerequisiteScansRemaining = 0
 
     var mockLocationBlocksDeviceMutation: Bool {
         mockLocationController.blocksDeviceMutation
@@ -253,7 +260,7 @@ final class RecoveryModel: ObservableObject {
     }
 
     var canChooseIPSW: Bool {
-        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
+        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation && !companionController.isBusy &&
         !isMonitoring && !isScanning && !isValidatingFirmware && !isLoadingDeviceCenter &&
         !isGenericDFURestoreTarget &&
         snapshot.deviceCount == 1 && snapshot.hasVerifiedSupportedDeviceIdentity
@@ -261,7 +268,7 @@ final class RecoveryModel: ObservableObject {
 
     var canRestore: Bool {
         guard !operationRunning, !destructiveWorkflowActive, !postResetReviewRequired,
-              !crashCopyReviewRequired, !mockLocationBlocksDeviceMutation,
+              !crashCopyReviewRequired, !mockLocationBlocksDeviceMutation, !companionController.isBusy,
               !isScanning, !isMonitoring, !isValidatingFirmware, !isLoadingDeviceCenter,
               cfgutilAvailable, let target = currentRestoreTarget else { return false }
         if target.isGenericDFU { return selectedIPSW == nil }
@@ -269,14 +276,14 @@ final class RecoveryModel: ObservableObject {
     }
 
     var canRevive: Bool {
-        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
+        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation && !companionController.isBusy &&
         !isScanning && !isMonitoring && snapshot.deviceCount == 1 &&
         snapshot.mode == .recovery && snapshot.hasVerifiedSupportedDeviceIdentity && snapshot.ecid != nil &&
         snapshot.modeVerified && cfgutilAvailable && !isValidatingFirmware && !isLoadingDeviceCenter
     }
 
     var canFactoryReset: Bool {
-        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
+        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation && !companionController.isBusy &&
         !isScanning && !isMonitoring &&
         !isValidatingFirmware && !isLoadingDeviceCenter &&
         snapshot.deviceCount == 1 && snapshot.mode == .normal &&
@@ -285,7 +292,7 @@ final class RecoveryModel: ObservableObject {
     }
 
     var canUseNormalDeviceUtilities: Bool {
-        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
+        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation && !companionController.isBusy &&
         !isScanning && !isMonitoring && !isValidatingFirmware && !isLoadingDeviceCenter &&
         snapshot.deviceCount == 1 && snapshot.mode == .normal && snapshot.modeVerified &&
         snapshot.hasVerifiedSupportedDeviceIdentity && snapshot.ecid != nil && snapshot.udid != nil &&
@@ -294,7 +301,7 @@ final class RecoveryModel: ObservableObject {
     }
 
     var canOpenFinderBackup: Bool {
-        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation &&
+        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired && !crashCopyReviewRequired && !mockLocationBlocksDeviceMutation && !companionController.isBusy &&
         !isScanning && !isMonitoring && !isValidatingFirmware && !isLoadingDeviceCenter &&
         snapshot.deviceCount == 1 && snapshot.mode == .normal && snapshot.modeVerified &&
         snapshot.hasVerifiedSupportedDeviceIdentity && snapshot.ecid != nil && snapshot.udid != nil && snapshot.locationID != nil
@@ -345,14 +352,14 @@ final class RecoveryModel: ObservableObject {
 
     private var canEnterRecoveryWithSoftware: Bool {
         RecoveryTransitionTarget(snapshot: snapshot) != nil && ToolPaths.enterRecovery != nil &&
-        !isLoadingDeviceCenter && !mockLocationBlocksDeviceMutation
+        !isLoadingDeviceCenter && !mockLocationBlocksDeviceMutation && !companionController.isBusy
     }
 
     var canStartDFUAssistant: Bool {
         guard !operationRunning, !destructiveWorkflowActive, !postResetReviewRequired,
               !crashCopyReviewRequired, !isScanning, !isMonitoring,
               !isValidatingFirmware, !isLoadingDeviceCenter,
-              !mockLocationBlocksDeviceMutation,
+              !mockLocationBlocksDeviceMutation, !companionController.isBusy,
               snapshot.deviceCount == 1,
               DeviceDetector.canonicalECIDHex(snapshot.ecid) != nil,
               snapshot.locationID != nil else { return false }
@@ -368,11 +375,11 @@ final class RecoveryModel: ObservableObject {
 
     var primaryActionEnabled: Bool {
         if postResetReviewRequired {
-            return !operationRunning && !destructiveWorkflowActive && !isScanning && !isMonitoring
+            return !operationRunning && !destructiveWorkflowActive && !isScanning && !isMonitoring && !companionController.isBusy
         }
         guard !operationRunning, !destructiveWorkflowActive, !isScanning, !isMonitoring,
               !isValidatingFirmware, !isLoadingDeviceCenter, !crashCopyReviewRequired,
-              !mockLocationBlocksDeviceMutation else { return false }
+              !mockLocationBlocksDeviceMutation, !companionController.isBusy else { return false }
         switch snapshot.mode {
         case .normal:
             return RecoveryTransitionTarget(snapshot: snapshot) != nil
@@ -394,10 +401,12 @@ final class RecoveryModel: ObservableObject {
     init(
         autoSelectFirmware: Bool = false,
         mockLocationController: MockLocationController? = nil,
+        companionController: CompanionController? = nil,
         dependencyDoctorSnapshot injectedDependencyDoctorSnapshot: DependencyDoctorSnapshot? = nil,
         recoveryTransitionDependencies injectedRecoveryTransitionDependencies: RecoveryTransitionDependencies? = nil
     ) {
         self.mockLocationController = mockLocationController ?? MockLocationController()
+        self.companionController = companionController ?? CompanionController()
         self.recoveryTransitionDependencies = injectedRecoveryTransitionDependencies ?? RecoveryTransitionDependencies(
             detect: { DeviceDetector.enriched() },
             validatePairing: { PairingProbe.validate(udid: $0) },
@@ -464,6 +473,42 @@ final class RecoveryModel: ObservableObject {
                 self?.confirmMockLocationWiFiSetup(target: target) ?? false
             }
         ))
+        self.companionController.configureHost(.init(
+            currentSnapshot: { [weak self] in self?.snapshot ?? DeviceSnapshot() },
+            canInstall: { [weak self] in self?.canInstallCompanion == true },
+            requestFreshEvidence: { [weak self] completion in
+                guard let self else {
+                    completion(MockLocationFreshEvidence(snapshot: DeviceSnapshot(), pairingAndTrustVerified: false))
+                    return
+                }
+                self.workQueue.async {
+                    let detected = DeviceDetector.enriched()
+                    let trusted = detected.udid.map { PairingProbe.validate(udid: $0).isValid } ?? false
+                    DispatchQueue.main.async {
+                        completion(MockLocationFreshEvidence(snapshot: detected, pairingAndTrustVerified: trusted))
+                    }
+                }
+            }
+        ))
+        companionObservation = self.companionController.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.objectWillChange.send() }
+        }
+        let companionGatePublishers: [AnyPublisher<Void, Never>] = [
+            $operationRunning.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $destructiveWorkflowActive.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $postResetReviewRequired.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $crashCopyReviewRequired.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $isScanning.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $isMonitoring.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $isValidatingFirmware.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $isLoadingDeviceCenter.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            self.mockLocationController.$blocksDeviceMutation.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            self.companionController.$isBusy.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            self.companionController.$autoInstallEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+        ]
+        companionGateObservation = Publishers.MergeMany(companionGatePublishers)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.resumePendingCompanionConnection() }
         appendLog("YIOS-KIT started.")
         appendLog("No exploit, jailbreak, activation bypass, or raw write command is used.")
         recordTimeline(
@@ -515,11 +560,12 @@ final class RecoveryModel: ObservableObject {
     var canRefreshDeviceCenter: Bool {
         !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired &&
         !isScanning && !isMonitoring && !isValidatingFirmware && !isLoadingDeviceCenter &&
-        !mockLocationBlocksDeviceMutation &&
+        !mockLocationBlocksDeviceMutation && !companionController.isBusy &&
         snapshot.deviceCount == 1
     }
 
     private var mockLocationHostGate: MockLocationHostGate {
+        if companionController.isBusy { return MockLocationHostGate(blockReason: .anotherOperation) }
         if operationRunning { return MockLocationHostGate(blockReason: .anotherOperation) }
         if destructiveWorkflowActive { return MockLocationHostGate(blockReason: .destructiveWorkflow) }
         if postResetReviewRequired { return MockLocationHostGate(blockReason: .postResetReview) }
@@ -624,14 +670,87 @@ final class RecoveryModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        companionController.refreshAvailability()
+        startCompanionConnectionWatcher()
         scan()
+    }
+
+    /// Installation owns the device exclusively, but must not reject its own
+    /// preflight merely because CompanionController has already become busy.
+    var canInstallCompanion: Bool {
+        !operationRunning && !destructiveWorkflowActive && !postResetReviewRequired &&
+        !crashCopyReviewRequired && !isScanning && !isMonitoring &&
+        !isValidatingFirmware && !isLoadingDeviceCenter && !mockLocationBlocksDeviceMutation
+    }
+
+    private func startCompanionConnectionWatcher() {
+        guard companionConnectionTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: companionConnectionQueue)
+        var lastUSB: DeviceSnapshot?
+        var successfulEmptySamples = 0
+        timer.schedule(deadline: .now() + 3, repeating: 3)
+        timer.setEventHandler { [weak self] in
+            // A failed ioreg read must never look like an unplug and reopen an
+            // uncertain installation for automatic retry.
+            let result = ProcessRunner.run(
+                ToolPaths.ioreg,
+                ["-p", "IOUSB", "-r", "-c", "IOUSBHostDevice", "-l", "-w", "0"],
+                timeout: 5
+            )
+            guard result.exitCode == 0, !result.timedOut else { return }
+            let observed = DeviceDetector.parseIOReg(result.stdout)
+            let changed = observed != lastUSB
+            lastUSB = observed
+            let wasConfirmedEmpty = successfulEmptySamples >= 2
+            successfulEmptySamples = observed.mode == .notDetected && observed.deviceCount == 0
+                ? min(2, successfulEmptySamples + 1) : 0
+            let confirmedDisconnect = !wasConfirmedEmpty && successfulEmptySamples == 2
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if confirmedDisconnect { self.companionController.confirmedUSBDisconnected() }
+                if changed {
+                    self.companionUSBChangePending = true
+                    self.companionPrerequisiteScansRemaining = 60
+                    self.resumePendingCompanionConnection()
+                } else if self.companionPrerequisiteScansRemaining > 0,
+                          observed.deviceCount == 1,
+                          observed.usbPID == 0x12A8 || observed.usbPID == 0x12A9,
+                          !self.snapshot.modeVerified,
+                          self.companionController.autoInstallEnabled,
+                          self.companionController.payloadAvailable,
+                          !self.companionController.isBusy, self.canInstallCompanion {
+                    // Trust can be approved without changing the USB registry.
+                    // Retry only discovery, bounded to this initial connection;
+                    // the installer owns its separate once-per-connection gate.
+                    self.companionPrerequisiteScansRemaining -= 1
+                    self.scan(preserveError: true)
+                }
+            }
+        }
+        companionConnectionTimer = timer
+        timer.resume()
+    }
+
+    private func resumePendingCompanionConnection() {
+        guard hasStarted, companionController.autoInstallEnabled,
+              !companionController.isBusy, canInstallCompanion else { return }
+        if companionUSBChangePending {
+            companionUSBChangePending = false
+            scan(preserveError: true)
+        } else {
+            companionController.observeConnection(snapshot)
+        }
+    }
+
+    deinit {
+        companionConnectionTimer?.cancel()
     }
 
     func scan(preserveError: Bool = false) {
         guard !postResetReviewRequired, !crashCopyReviewRequired,
               !operationRunning, !destructiveWorkflowActive, !isScanning, !isMonitoring,
               !isValidatingFirmware, !isLoadingDeviceCenter,
-              !mockLocationController.isBusy else { return }
+              !mockLocationController.isBusy, !companionController.isBusy else { return }
         isScanning = true
         if !preserveError { lastError = nil }
         statusText = "Scanning USB and Apple device services…"
@@ -1362,7 +1481,7 @@ final class RecoveryModel: ObservableObject {
             confirmPostResetReviewAndScan()
             return
         }
-        guard !crashCopyReviewRequired, !mockLocationBlocksDeviceMutation else { return }
+        guard !crashCopyReviewRequired, !mockLocationBlocksDeviceMutation, !companionController.isBusy else { return }
         switch snapshot.mode {
         case .normal:
             canEnterRecoveryWithSoftware ? enterRecovery() : startLiveMonitor()
@@ -1379,7 +1498,8 @@ final class RecoveryModel: ObservableObject {
 
     private func confirmPostResetReviewAndScan() {
         guard postResetReviewRequired,
-              !operationRunning, !destructiveWorkflowActive, !isScanning, !isMonitoring else { return }
+              !operationRunning, !destructiveWorkflowActive, !isScanning, !isMonitoring,
+              !companionController.isBusy else { return }
         postResetReviewRequired = false
         appendLog("The user confirmed the post-reset iPhone screen; starting the only review-clearing fresh scan.")
         scan(preserveError: true)
@@ -1832,6 +1952,7 @@ final class RecoveryModel: ObservableObject {
             usbPID: detected.usbPID
         )
         appendLog("Detected: \(detected.mode.title), PID \(detected.pidHex), ECID \(masked(detected.ecid)).")
+        companionController.observeConnection(detected)
     }
 
     private func completePendingDFUVerification(with detected: DeviceSnapshot) {
@@ -1879,7 +2000,7 @@ final class RecoveryModel: ObservableObject {
         guard !operationRunning, !destructiveWorkflowActive, !postResetReviewRequired,
               !crashCopyReviewRequired, !isScanning, !isMonitoring,
               !isValidatingFirmware, !isLoadingDeviceCenter,
-              !mockLocationBlocksDeviceMutation,
+              !mockLocationBlocksDeviceMutation, !companionController.isBusy,
               let target = RecoveryTransitionTarget(snapshot: snapshot),
               let tool = ToolPaths.enterRecovery else {
             showAlert(title: "Cannot enter Recovery", message: "Exactly one verified Normal-iOS iPhone with an exact ECID, UDID, ProductType, USB location, existing Trust, and the Recovery helper is required.")
@@ -1957,7 +2078,7 @@ final class RecoveryModel: ObservableObject {
         expectedLocation: Int? = nil,
         intent: USBMonitorIntent = .recoveryOrDFU
     ) {
-        guard !isMonitoring else { return }
+        guard !isMonitoring, !companionController.isBusy else { return }
         let pinned = expectedECID ?? snapshot.ecid
         guard let pinned else {
             showAlert(title: "ECID missing", message: "The target ECID must be known before monitoring mode changes.")
@@ -2501,6 +2622,7 @@ final class RecoveryModel: ObservableObject {
         for target: SupportedDeviceModel? = nil
     ) {
         guard !isValidatingFirmware, !operationRunning, !isMonitoring, !isScanning,
+              !companionController.isBusy,
               let target = target ?? snapshot.supportedDeviceModel else { return }
         let pinnedECID = DeviceDetector.normalizeECID(snapshot.ecid)
         let generation = UUID()
@@ -2547,7 +2669,8 @@ final class RecoveryModel: ObservableObject {
             }
             return
         }
-        guard !isValidatingFirmware, !operationRunning, !isMonitoring, !isScanning else { return }
+        guard !isValidatingFirmware, !operationRunning, !isMonitoring, !isScanning,
+              !companionController.isBusy else { return }
         let pinnedECID = DeviceDetector.normalizeECID(snapshot.ecid)
         let home = FileManager.default.homeDirectoryForCurrentUser
         let directories = [

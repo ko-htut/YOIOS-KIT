@@ -68,7 +68,7 @@ third_party_tree="${stage_root}/YIOS-KIT-Third-Party-Source-${version}"
   "${stage_output}/${release_stem}.zip"
 /bin/cp "${project_dir}/README.md" "${stage_output}/Read Me.md"
 
-for item in .gitignore Backend Info.plist README.md build-app.sh Scripts Sources Tests; do
+for item in .gitignore Backend Companion Info.plist README.md build-app.sh Scripts Sources Tests; do
   /usr/bin/ditto "${project_dir}/${item}" "${source_tree}/${item}"
 done
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent \

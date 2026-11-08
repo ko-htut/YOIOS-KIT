@@ -773,6 +773,8 @@ struct DashboardSettingsView: View {
                     }
                 }
 
+                CompanionSettingsPanel(model: model, controller: model.companionController)
+
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible(minimum: 300), spacing: 20, alignment: .top), count: 2),
                     alignment: .leading,
@@ -893,6 +895,59 @@ struct DashboardSettingsView: View {
         case .appleReviveRestore: return "Apple Revive / Restore"
         case .factoryReset: return "Factory Reset"
         }
+    }
+}
+
+private struct CompanionSettingsPanel: View {
+    @ObservedObject var model: RecoveryModel
+    @ObservedObject var controller: CompanionController
+
+    var body: some View {
+        DashboardPanel(title: "YIOS-KIT Companion", systemImage: "iphone", accent: .blue) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(controller.statusText)
+                        .font(.callout.weight(.semibold))
+                    Text(controller.detailText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                if controller.isBusy {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            Divider()
+            Toggle("Install automatically when an iPhone connects", isOn: Binding(
+                get: { controller.autoInstallEnabled },
+                set: { controller.setAutoInstallEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .disabled(controller.isBusy)
+            .accessibilityIdentifier("companionAutoInstallToggle")
+            Text("A single trusted iPhone must be connected by USB. Installation waits while Recovery, Restore, or Mock Location is active.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                Button("Install / Repair Companion") { controller.installNow() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canInstallCompanion || controller.isBusy || !controller.payloadAvailable ||
+                              model.snapshot.mode != .normal || !model.snapshot.modeVerified || model.snapshot.deviceCount != 1)
+                    .accessibilityIdentifier("companionInstallButton")
+                Button("Check Setup") { controller.refreshAvailability() }
+                    .buttonStyle(.bordered)
+                    .disabled(controller.isBusy)
+                    .accessibilityIdentifier("companionCheckSetupButton")
+                Spacer(minLength: 0)
+            }
+            Text("Free Personal Team builds need signing renewal after 7 days. The iPhone app provides saved places and Maps; phone-side Mock Location is not included in this version.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityIdentifier("settingsCompanionPanel")
     }
 }
 

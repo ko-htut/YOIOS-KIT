@@ -10,6 +10,15 @@ module_cache="${project_dir}/build/module-cache"
 toolchain="${project_dir}/Vendor/Toolchain/arm64"
 location_backend="${project_dir}/Vendor/LocationBackend/arm64"
 signing_identity="${YIOS_CODESIGN_IDENTITY:--}"
+companion_app="${YIOS_COMPANION_APP:-${project_dir}/build/Companion/Device/YIOS-KIT Companion.app}"
+
+if [[ -n "${YIOS_COMPANION_APP:-}" && ! -d "${companion_app}" ]]; then
+  print -u2 "The explicitly selected iPhone Companion app was not found."
+  exit 1
+fi
+if [[ -d "${companion_app}" ]]; then
+  "${project_dir}/Scripts/verify-companion.sh" "${companion_app}"
+fi
 
 if [[ ! -d "${developer_dir}" ]]; then
   print -u2 "Xcode is required at /Applications/Xcode.app"
@@ -91,6 +100,16 @@ DEVELOPER_DIR="${developer_dir}" /usr/bin/xcrun swiftc \
 /usr/bin/ditto "${location_backend}/Resources/YIOSLocation" "${staged_app}/Contents/Resources/YIOSLocation"
 /bin/cp "${location_backend}/Resources/LocationBackendPayload.sha256" \
   "${staged_app}/Contents/Resources/LocationBackendPayload.sha256"
+
+# The iPhone app keeps its own provisioning profile and Apple development
+# signature. Never replace that signature with the Mac app's signing identity.
+if [[ -d "${companion_app}" ]]; then
+  /bin/mkdir -p "${staged_app}/Contents/Resources/Companion"
+  /usr/bin/ditto "${companion_app}" "${staged_app}/Contents/Resources/Companion/YIOS-KIT Companion.app"
+  "${project_dir}/Scripts/verify-companion.sh" "${staged_app}/Contents/Resources/Companion/YIOS-KIT Companion.app"
+else
+  print "No signed iPhone Companion payload: Settings will show signing setup is needed."
+fi
 
 # Sign nested code from the inside out. The outer app is signed once, without
 # using --deep as a signing shortcut.

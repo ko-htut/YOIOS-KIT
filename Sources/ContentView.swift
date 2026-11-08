@@ -410,7 +410,7 @@ struct ContentView: View {
                     Label(headerBusy ? "Scanning…" : "New Scan", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(YIOSActionButtonStyle())
-                .disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.crashCopyReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter || model.mockLocationController.isBusy)
+                .disabled(model.operationRunning || model.destructiveWorkflowActive || model.postResetReviewRequired || model.crashCopyReviewRequired || model.isScanning || model.isMonitoring || model.isValidatingFirmware || model.isLoadingDeviceCenter || model.mockLocationController.isBusy || model.companionController.isBusy)
                 .accessibilityIdentifier("scanButton")
                 }
             }
@@ -590,6 +590,7 @@ struct ContentView: View {
         if model.mockLocationController.reviewRequired { return "Mock Location reset review required" }
         if model.mockLocationController.isAssumedActive { return "Mock Location assumed active — reset before other operations" }
         if model.mockLocationController.isBusy { return model.mockLocationController.statusText }
+        if model.companionController.isBusy { return model.companionController.statusText }
         if model.crashCopyReviewRequired { return "Crash-copy review required" }
         if model.postResetReviewRequired { return "Hello-screen review required" }
         if model.operationRunning { return model.operationStep.isEmpty ? "Operation in progress" : model.operationStep }
@@ -603,6 +604,7 @@ struct ContentView: View {
         if model.mockLocationController.reviewRequired { return .red }
         if model.mockLocationController.isAssumedActive { return .purple }
         if model.mockLocationController.isBusy { return .blue }
+        if model.companionController.isBusy { return .blue }
         if model.crashCopyReviewRequired || model.snapshot.deviceCount > 1 { return .red }
         if model.postResetReviewRequired || model.snapshot.mode == .restoreOS || model.snapshot.mode == .usbUnavailable { return .orange }
         if model.snapshot.mode == .normal && model.snapshot.modeVerified { return .green }

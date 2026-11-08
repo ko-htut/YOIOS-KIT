@@ -47,6 +47,7 @@ test_mains=(
   MockLocationTestMain
   RecoveryTransitionTestMain
   DFUAssistantTestMain
+  CompanionTestMain
 )
 
 if [[ -n "${YIOS_TEST_FILTER:-}" ]]; then

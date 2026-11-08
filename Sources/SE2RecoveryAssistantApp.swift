@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model?.destructiveWorkflowActive == true ||
                 model?.postResetReviewRequired == true ||
                 model?.crashCopyReviewRequired == true ||
+                model?.companionController.isBusy == true ||
                 model?.mockLocationController.blocksDeviceMutation == true else {
             return .terminateNow
         }
@@ -58,12 +59,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model?.isMonitoring != true &&
             model?.destructiveWorkflowActive != true &&
             model?.postResetReviewRequired != true &&
-            model?.crashCopyReviewRequired != true
+            model?.crashCopyReviewRequired != true &&
+            model?.companionController.isBusy != true
         let unavailableRecordedIPhone = locationSafetyRecordOnly &&
             model?.mockLocationController.shouldOfferForgetUnavailableRecord == true
         let persistentLocationOnly = model?.mockLocationController.isAssumedPersistent == true &&
             locationSafetyRecordOnly
-        if unavailableRecordedIPhone {
+        if model?.companionController.isBusy == true {
+            alert.messageText = "Companion installation is in progress"
+            alert.informativeText = "Keep YIOS-KIT open and the iPhone connected until installation and verification finish."
+        } else if unavailableRecordedIPhone {
             alert.messageText = "Mock Location safety record still locks this Mac"
             alert.informativeText = "The saved record belongs to a different iPhone. If the recorded iPhone is permanently unavailable, open Mock Location and choose Forget Unavailable iPhone Record. That explicit action deletes only YIOS-KIT's local record and unlocks this Mac; it sends no command and cannot reset or verify the recorded iPhone's location."
         } else if persistentLocationOnly {
@@ -117,7 +122,14 @@ struct SE2RecoveryAssistantApp: App {
                     let existing = state.0
                     let active = existing.0
                     appDelegate.setWindowClosingEnabled(!(
-                        active.0 || active.1 || active.2 || active.3 || existing.1 || state.1
+                        active.0 || active.1 || active.2 || active.3 || existing.1 || state.1 || model.companionController.isBusy
+                    ))
+                }
+                .onReceive(model.companionController.$isBusy) { installing in
+                    appDelegate.setWindowClosingEnabled(!(
+                        installing || model.operationRunning || model.isMonitoring ||
+                        model.destructiveWorkflowActive || model.postResetReviewRequired ||
+                        model.crashCopyReviewRequired || model.mockLocationController.blocksDeviceMutation
                     ))
                 }
         }
