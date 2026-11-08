@@ -148,7 +148,7 @@ struct UIContractTestMain {
             }
             assertButton(
                 "mockLocationSetButton",
-                expectedLabel: "Start Mock Location",
+                expectedLabel: "Start USB Mock Location",
                 expectedEnabled: mockLocationModel.mockLocationController.canSetLocation,
                 nodes: nodes,
                 scenario: .normal
@@ -208,7 +208,7 @@ struct UIContractTestMain {
                 expect(node("mockLocationStatusPanel", in: nodes) != nil, .normal, "Mock Location \(stateName) warning/status panel is missing")
                 assertButton(
                     "mockLocationSetButton",
-                    expectedLabel: "Start Mock Location",
+                    expectedLabel: "Start USB Mock Location",
                     expectedEnabled: false,
                     nodes: nodes,
                     scenario: .normal

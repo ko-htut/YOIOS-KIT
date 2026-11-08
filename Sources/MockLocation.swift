@@ -2814,10 +2814,10 @@ final class MockLocationController: ObservableObject {
                     setSimulation(.assumedActive(pin: run.target.pin, requestedAt: now()))
                     statusText = run.transport == .wifi
                         ? "Wi-Fi Mock Location session is active"
-                        : "Mock Location is assumed active"
+                        : "USB Mock Location session is active — keep the cable connected"
                     detailText = run.transport == .wifi
                         ? "The exact iPhone acknowledged Set over Wi-Fi. You may unplug USB now. Keep YIOS-KIT and this Mac awake on the same network. iOS provides no getter to verify the coordinate."
-                        : "The backend acknowledged the live simulation session. iOS provides no getter to confirm the simulated coordinate."
+                        : "The backend acknowledged Set over USB. Unplugging ends this live session. To use a live session without the cable, send Return to Real Location first, then choose Wi-Fi and check its connection. iOS provides no getter to verify the coordinate."
                 } else {
                     processCoordinator.beginPersistentTeardownDeadline(
                         for: identifier,

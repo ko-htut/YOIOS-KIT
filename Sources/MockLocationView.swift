@@ -282,12 +282,12 @@ struct MockLocationView: View {
                 set: { controller.selectTransport($0) }
             )) {
                 ForEach(MockLocationTransport.allCases) { transport in
-                    Text(transport.displayName).tag(transport)
+                    Text(transport == .usb ? "USB · cable required" : transport.displayName).tag(transport)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 380)
             .disabled(!controller.canSelectTransport)
             .accessibilityIdentifier("mockLocationTransportPicker")
 
@@ -315,6 +315,13 @@ struct MockLocationView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
+                Label("USB cable required", systemImage: "cable.connector")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+                    .accessibilityIdentifier("mockLocationUSBCableRequiredLabel")
                 Text("Keep the cable connected during a live USB session. Choose Wi-Fi to start a live connection that can continue after unplugging.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -570,7 +577,7 @@ struct MockLocationView: View {
         if controller.selectedTransport == .wifi { return "Start Wi-Fi Mock Location" }
         return persistentModeEnabled
             ? "Set Persistent Location (Experimental)"
-            : "Start Mock Location"
+            : "Start USB Mock Location"
     }
 
     private var clearGuidance: String {
@@ -689,7 +696,7 @@ struct MockLocationView: View {
         if controller.reviewRequired { return "REVIEW REQUIRED" }
         if controller.isWiFiSessionActive { return "WI-FI SESSION ACTIVE" }
         if controller.isAssumedPersistent { return "PERSISTENCE ASSUMED" }
-        if controller.isAssumedActive { return "ASSUMED ACTIVE" }
+        if controller.isAssumedActive { return "USB LIVE · CABLE REQUIRED" }
         if controller.isBusy { return "WORKING" }
         if case .resetRequestSent = controller.simulationKnowledge { return "RESET SENT" }
         if case .ready = controller.readiness { return "READY" }

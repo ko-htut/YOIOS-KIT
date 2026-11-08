@@ -548,7 +548,7 @@ final class RecoveryModel: ObservableObject {
         let transport = mockLocationController.selectedTransport
         let connectionDetail = transport == .wifi
             ? "\n\nWi-Fi live session: keep USB attached until YIOS-KIT reports the session is active, then you may unplug. Keep this Mac awake, YIOS-KIT open, and both devices on the same network. Use Return to Real Location over the same live session when finished."
-            : ""
+            : (isPersistent ? "" : "\n\nUSB live session: keep the cable connected. Unplugging ends this session. To use Mock Location without the cable, cancel and select Wi-Fi, enable Wi-Fi Connection, and Check Readiness first.")
         alert.informativeText = "Target: \(target.productType) • \(target.pin.displayToken) • UDID …\(target.udid.suffix(8))\nConnection: \(transport.displayName)\nCoordinate: \(coordinate.latitudeArgument), \(coordinate.longitudeArgument)\n\nThis can affect Maps, navigation, location sharing, and every app that reads location until Return to Real Location is sent. Apps may detect that the location is simulated. iOS provides no getter to verify the active coordinate.\(persistenceWarning)\(connectionDetail)"
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: isPersistent ? "Set Experimental Persistent Location" : "Set Test Location")
